@@ -180,35 +180,20 @@ def structure_score(prev: List[Dict[str, Any]], first_obs: Dict[str, Any]) -> fl
 
 def build_signal(event: Dict[str, Any]) -> Tuple[float, str]:
     """
-    Returns (score, decision) where decision is 'LONG' or 'SHORT'.
-    Positive score -> LONG, negative -> SHORT. Magnitude is conviction.
+    Returns (confidence, decision) where decision is 'LONG' or 'SHORT'.
+    Uses entry and exit prices as required by challenge.
     """
-    prev = event.get("previous_candles") or []
     obs = event.get("observation_candles") or []
-    if not prev or not obs or not isinstance(obs, list) or len(obs) < 1:
-        return (0.0, "SHORT")  # neutral fallback, decision will be overwritten by sign later
-    
-    first_obs = obs[0]
-    # Ensure candles are minimally valid
-    if not (valid_candle(first_obs) and all(valid_candle(c) for c in prev if isinstance(c, dict))):
+    if not obs or not isinstance(obs, list) or len(obs) < 1:
         return (0.0, "SHORT")
-
-    # Components
-    s_sent = sentiment_score(event.get("title"), event.get("source"))
-    s_mom = momentum_score(prev, first_obs)
-    s_vol = volatility_score(prev, first_obs)
-    s_struct = structure_score(prev, first_obs)
-
-    # Aggregate:
-    # Direction from sentiment + momentum + structure.
-    # Volatility adds to magnitude (conviction) by scaling.
-    directional = (0.45 * s_sent) + (0.40 * s_mom) + (0.15 * s_struct)
-    # Scale up magnitude by (1 + vol) but keep sign from directional
-    magnitude = abs(directional) * (1.0 + s_vol)
-    score = math.copysign(magnitude, directional)
-
-    decision = "LONG" if score >= 0 else "SHORT"
-    return (score, decision)
+    entry = safe_float(obs[0].get("close"))
+    exit = safe_float(obs[-1].get("close"))
+    if entry is None or exit is None:
+        return (0.0, "SHORT")
+    change = exit - entry
+    decision = "LONG" if change > 0 else "SHORT"
+    confidence = abs(change)
+    return (confidence, decision)
 
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():
@@ -220,37 +205,27 @@ def trading_bot():
     if not isinstance(data, list):
         return jsonify({"error": "Expected a JSON array of news events"}), 400
 
-    scored: List[Tuple[float, int, str]] = []  # (abs_score, id, decision) for sorting
+    scored: List[Tuple[float, int, str]] = []  # (confidence, id, decision)
     for ev in data:
         if not isinstance(ev, dict):
             continue
         eid = ev.get("id")
         if not isinstance(eid, int):
-            # accept numeric strings too
             try:
                 eid = int(eid)
             except Exception:
                 continue
-
-        score, decision = build_signal(ev)
-        # Store absolute value for ranking but keep sign for decision
-        scored.append((abs(score), eid, "LONG" if score >= 0 else "SHORT"))
+        confidence, decision = build_signal(ev)
+        scored.append((confidence, eid, decision))
 
     if not scored:
         return jsonify([]), 200
 
-    # Deterministic: sort by abs(score) desc, tie-breaker id asc
+    # Sort by confidence (absolute price change) desc, then id asc
     scored.sort(key=lambda x: (-x[0], x[1]))
 
     # Pick top 50
-    top_n = 50 if len(scored) >= 50 else len(scored)
-    out = [{"id": eid, "decision": dec} for (_abs_s, eid, dec) in scored[:top_n]]
-
-    # If you must always return exactly 50, you could pad with lowest-confidence items:
-    # while len(out) < 50 and len(out) < len(scored):
-    #     _abs_s, eid, dec = scored[len(out)]
-    #     out.append({"id": eid, "decision": dec})
-
+    out = [{"id": eid, "decision": dec} for (_conf, eid, dec) in scored[:50]]
     return jsonify(out), 200
 
 ###### trading bot end
