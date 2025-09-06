@@ -13,9 +13,9 @@ app = Flask(__name__)
 
 def get_trivia():
     # Answers to the trivia questions
-    answers = [2, 1, 2, 2, 3, 4, 3, 5, 4]
+    result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
     
-    return jsonify({"answers": answers})
+    return jsonify(result)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
