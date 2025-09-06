@@ -97,78 +97,66 @@ def get_gambit():
 
 ###### ink archive start
 def find_best_gain_cycle(ratios: List[List[float]], goods: List[str]):
+    """Enumerate all simple directed cycles to find maximal gain.
+
+    Returns (path_names_with_closure, gain_percent). Gain percent = (product-1)*100.
+    If no profitable cycle (>1), returns ([], 0.0).
+    """
     n = len(goods)
-    # Build edge list (u,v,ratio)
-    edges: List[Tuple[int,int,float]] = []
-    ratio_lookup = {}
+    adj: Dict[int, List[Tuple[int,float]]] = {i: [] for i in range(n)}
     for r in ratios:
         if len(r) != 3:
             continue
         u, v, val = int(r[0]), int(r[1]), float(r[2])
-        if u < 0 or u >= n or v < 0 or v >= n:
-            continue
-        edges.append((u, v, val))
-        ratio_lookup[(u, v)] = val
+        if 0 <= u < n and 0 <= v < n and val > 0:
+            adj[u].append((v, val))
 
     best_product = 1.0
     best_cycle: List[int] = []
 
-    # Bellman-Ford style search for negative cycles on -log(r)
-    for start in range(n):
-        dist = [math.inf]*n
-        pred: List[Optional[int]] = [None]*n
-        dist[start] = 0.0
-        updated_node = None
-        for _ in range(n):
-            updated_node = None
-            for u, v, r in edges:
-                w = -math.log(r)
-                if dist[u] + w < dist[v]:
-                    dist[v] = dist[u] + w
-                    pred[v] = u
-                    updated_node = v
-            if updated_node is None:
-                break
-        # If updated on nth iteration -> negative cycle reachable from start
-        if updated_node is None:
-            continue
-        # Move into cycle
-        x = updated_node
-        for _ in range(n):
-            if x is None: break
-            x = pred[x]
-        if x is None:
-            continue
-        # Extract cycle
-        cycle = []
-        cur = x
-        while True:
-            cycle.append(cur)
-            cur = pred[cur]  # type: ignore
-            if cur is None or cur == x:
-                break
-        if not cycle or cur is None:
-            continue
-        cycle.reverse()  # order in traversal direction
-        # Ensure cycle is closed sequentially; compute product
-        product = 1.0
-        for i in range(len(cycle)):
-            a = cycle[i]
-            b = cycle[(i+1) % len(cycle)]
-            r = ratio_lookup.get((a,b))
-            if r is None:
-                product = 1.0
-                break
-            product *= r
-        if product > best_product + 1e-12:
-            best_product = product
-            best_cycle = cycle[:]
+    # Precompute max outgoing ratio per node for a simple optimistic pruning
+    max_out = [max((w for _, w in adj[i]), default=1.0) for i in range(n)]
+
+    def upper_bound(product: float, remaining_slots: int) -> float:
+        # Theoretical upper bound if we chain the largest remaining ratios (heuristic)
+        # Use global maximum outgoing ratio
+        if remaining_slots <= 0:
+            return product
+        global_max = max(max_out) if max_out else 1.0
+        return product * (global_max ** remaining_slots)
+
+    visited = [False]*n
+
+    def dfs(start: int, node: int, product: float, path: List[int], depth: int):
+        nonlocal best_product, best_cycle
+        # Explore outgoing edges
+        for nxt, r in adj[node]:
+            if nxt == start and depth >= 2:
+                # close cycle
+                cycle_product = product * r
+                if cycle_product > best_product + 1e-12:
+                    best_product = cycle_product
+                    best_cycle = path + [nxt]
+                continue
+            if not visited[nxt] and depth + 1 < n:
+                # Prune if even with optimistic bound can't beat best
+                est = upper_bound(product * r, n - (depth + 1))
+                if est <= best_product + 1e-12:
+                    continue
+                visited[nxt] = True
+                dfs(start, nxt, product * r, path + [nxt], depth + 1)
+                visited[nxt] = False
+
+    for s in range(n):
+        visited[s] = True
+        dfs(s, s, 1.0, [s], 0)
+        visited[s] = False
 
     if best_product <= 1.0 or not best_cycle:
         return [], 0.0
 
-    # Rotate cycle to include starting node at both ends for output
-    path_names = [goods[i] for i in best_cycle] + [goods[best_cycle[0]]]
+    # best_cycle already includes start repeated at end. Convert to names.
+    path_names = [goods[i] for i in best_cycle]
     gain = (best_product - 1.0) * 100.0
     return path_names, gain
 
