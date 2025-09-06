@@ -200,6 +200,11 @@ def solve_sailing_club(test_cases):
 
 # Flask endpoint would look like this:
 
+from flask_cors import CORS
+
+app = Flask(__name__)
+CORS(app)
+
 @app.route('/sailing-club/submission', methods=['POST'])
 def sailing_club_endpoint():
     try:
