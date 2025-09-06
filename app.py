@@ -705,13 +705,10 @@ def calculate_manhattan_distance(point1, point2):
     return abs(x2 - x1) + abs(y2 - y1)
 
 def calculate_latency_points(distance):
-    # Full points (30) for distance <= 2
-    # Then decrease by 5 points for each additional unit of distance
-    # Minimum of 0 points
-    if distance <= 2:
-        return 30
-    else:
-        return max(0, 30 - 5 * (distance - 2))
+    # Formula: points = min(30, max(0, 40 - 5 × distance))
+    # This matches all example values exactly
+    points = 40 - 5 * distance
+    return max(0, min(30, points))
 
 @app.route('/ticketing-agent', methods=['POST'])
 def ticketing_agent():
