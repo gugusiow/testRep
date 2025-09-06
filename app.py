@@ -23,20 +23,24 @@ ROMAN_MAP = [
     ("IV", 4),
     ("I", 1),
 ]
+ROMAN_VALUE = dict(ROMAN_MAP)
 ROMAN_RE = re.compile(r"^(M{0,3})(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
 
 def is_roman(s: str) -> bool:
-    return bool(ROMAN_RE.match(s))
+    if not s:
+        return False
+    return bool(ROMAN_RE.match(s.upper()))
 
 def roman_to_int(s: str) -> int:
+    s = s.upper()
     i = 0
     n = 0
     while i < len(s):
-        if i + 1 < len(s) and s[i:i+2] in dict(ROMAN_MAP):
-            n += dict(ROMAN_MAP)[s[i:i+2]]
+        if i + 1 < len(s) and s[i:i+2] in ROMAN_VALUE:
+            n += ROMAN_VALUE[s[i:i+2]]
             i += 2
         else:
-            n += dict(ROMAN_MAP).get(s[i], 0)
+            n += ROMAN_VALUE.get(s[i], 0)
             i += 1
     return n
 
@@ -63,10 +67,8 @@ EN_TENS = {
 EN_SCALE = {
     "hundred":100, "thousand":1000, "million":1_000_000, "billion":1_000_000_000
 }
-EN_WORD_RE = re.compile(r"[a-z\- ]+$")
 
 def looks_english(s: str) -> bool:
-    # heuristic: all words must be in known sets + "and"
     t = s.lower().replace("-", " ")
     ws = [w for w in t.split() if w]
     if not ws:
@@ -98,12 +100,11 @@ def english_to_int(s: str) -> int:
 
 # ------------- German number parsing -------------
 
-# Normalize ß->ss, umlauts -> ae/oe/ue for consistent matching
 def de_norm(s: str) -> str:
     s = s.lower()
     s = s.replace("ß", "ss").replace("ä", "ae").replace("ö", "oe").replace("ü", "ue")
     s = s.replace("-", " ")
-    s = s.replace(" und ", "und")  # compact compounds
+    s = s.replace(" und ", "und")
     s = s.replace(" ", "")
     return s
 
@@ -119,35 +120,32 @@ DE_TENS = {
     "zwanzig":20,"dreissig":30,"dreißig":30,"vierzig":40,"fuenfzig":50,"fünfzig":50,
     "sechzig":60,"siebzig":70,"achtzig":80,"neunzig":90
 }
-# scales: hundert (100), tausend (1000), million(en) (1e6), milliarde(n) (1e9)
+
 def looks_german(s: str) -> bool:
     t = de_norm(s)
-    # Accept if string contains typical German pieces
-    return any(w in t for w in ["und","zig","ssig","hundert","tausend","million","milliarde",
-                                "ein","zwei","drei","vier","fuenf","sechs","sieben","acht","neun",
-                                "zehn","elf","zwoelf","dreizehn","vierzehn","fuenfzehn","sechzehn",
-                                "siebzehn","achtzehn","neunzehn"])
+    return any(w in t for w in [
+        "und","zig","ssig","hundert","tausend","million","milliarde",
+        "ein","zwei","drei","vier","fuenf","sechs","sieben","acht","neun",
+        "zehn","elf","zwoelf","dreizehn","vierzehn","fuenfzehn","sechzehn",
+        "siebzehn","achtzehn","neunzehn"
+    ])
 
 def parse_de_below_100(t: str) -> int:
-    # handle teens/direct matches
     if t in DE_TEENS: return DE_TEENS[t]
     if t in DE_TENS: return DE_TENS[t]
     if t in DE_UNITS: return DE_UNITS[t]
-    # pattern: <unit>und<tens> e.g., "einundzwanzig"
     m = re.match(r"^(ein|eins|zwei|drei|vier|fuenf|sechs|sieben|acht|neun)und(.+)$", t)
     if m:
         u = m.group(1)
         tens = m.group(2)
         if tens in DE_TENS and (u in DE_UNITS):
             return DE_UNITS[u] + DE_TENS[tens]
-    # fallback
     raise ValueError(f"Unrecognized German <100: {t}")
 
 def german_to_int(s: str) -> int:
     t = de_norm(s)
-    # handle "hundert" chunks
+
     def parse_chunk_upto_999(x: str) -> int:
-        # split at "hundert"
         if "hundert" in x:
             pre, post = x.split("hundert", 1)
             if pre == "": pre = "ein"
@@ -157,48 +155,48 @@ def german_to_int(s: str) -> int:
                 val += (DE_UNITS.get(tail) or DE_TEENS.get(tail) or DE_TENS.get(tail)
                         or parse_de_below_100(tail))
             return val
-        # no hundred: just below 100
         if x == "": return 0
         return DE_UNITS.get(x) or DE_TEENS.get(x) or DE_TENS.get(x) or parse_de_below_100(x)
 
+    def split_scale(word: str, plural_suffix: str, txt: str):
+        if word not in txt:
+            return None
+        left, rem = txt.split(word, 1)
+        # Strip optional plural suffix immediately following the scale
+        if plural_suffix and rem.startswith(plural_suffix):
+            rem = rem[len(plural_suffix):]
+        return left, rem
+
     total = 0
-    # split big scales in order: milliarde, million, tausend
-    for scale_word, scale_val in [("milliarde", 1_000_000_000),
-                                  ("million", 1_000_000),
-                                  ("tausend", 1000)]:
-        if scale_word in t:
-            parts = t.split(scale_word, 1)
-            left = parts[0]
-            t = parts[1]
-            # plural may be "en" for millionen, milliarden; handled by contains
+    # Descend big -> small scales; handle plural 'en'/'n'
+    for word, val, suffix in [("milliarde", 1_000_000_000, "n"),
+                              ("million", 1_000_000, "en"),
+                              ("tausend", 1000, "")]:
+        split = split_scale(word, suffix, t)
+        if split:
+            left, t = split
             left_val = parse_chunk_upto_999(left if left else "ein")
-            total += left_val * scale_val
+            total += left_val * val
     total += parse_chunk_upto_999(t)
     return total
 
 # ------------- Chinese number parsing -------------
 
-# digits
 CN_DIGITS = {
     "零":0,"〇":0,"○":0,"O":0,"０":0,
     "一":1,"二":2,"兩":2,"两":2,"三":3,"四":4,"五":5,"六":6,"七":7,"八":8,"九":9,
 }
-# small units
 CN_UNITS = {"十":10,"百":100,"千":1000}
-# large units (section-based)
 CN_LARGE = [("兆", 10**12), ("億", 10**8), ("亿", 10**8), ("萬", 10**4), ("万", 10**4)]
 
 def looks_chinese(s: str) -> bool:
     return any(ch in s for ch in list(CN_DIGITS.keys()) + list(CN_UNITS.keys()) + [lu for lu,_ in CN_LARGE])
 
 def chinese_section_to_int(sec: str) -> int:
-    # parse up to 9999 in Chinese
     if sec == "": return 0
     total = 0
     num = 0
-    last_unit = 1
     i = 0
-    # implicit leading "一十" like "十二"
     if len(sec) >= 1 and sec[0] == "十":
         total += 10
         i += 1
@@ -211,41 +209,32 @@ def chinese_section_to_int(sec: str) -> int:
                 total += num * CN_UNITS[sec[i]]
                 i += 1
                 num = 0
-            else:
-                # will add later
-                pass
         elif ch in CN_UNITS:
-            # lone unit like "十" when previous not digit: assume "一"
-            unit_val = CN_UNITS[ch]
-            total += max(1, num) * unit_val
+            total += max(1, num) * CN_UNITS[ch]
             num = 0
             i += 1
         else:
-            # unknown char, skip
             i += 1
     total += num
     return total
 
 def chinese_to_int(s: str) -> int:
-    # Split by large units: 兆 / 億/亿 / 萬/万
     rest = s
     total = 0
     for token, val in CN_LARGE:
         if token in rest:
             parts = rest.split(token)
             left = parts[0]
-            rest = token.join(parts[1:])  # keep remaining (if multiple same token, join back)
+            rest = token.join(parts[1:])
             total += chinese_section_to_int(left) * val
     total += chinese_section_to_int(rest)
     return total
 
 def classify_chinese_trad_or_simp(s: str) -> str:
-    # Heuristic classification for tie-breaking group
     if any(ch in s for ch,_ in [("萬",10_000),("億",100_000_000),("兩",2)]):
         return "zh_trad"
     if any(ch in s for ch,_ in [("万",10_000),("亿",100_000_000),("两",2)]):
         return "zh_simp"
-    # default to trad if ambiguous
     return "zh_trad"
 
 # ------------- Language detection & parsing -------------
@@ -258,23 +247,18 @@ LANG_DE = "german"
 LANG_ARABIC = "arabic"
 
 def detect_language(s: str) -> str:
-    # Order matters to avoid ambiguity; Roman first
     if is_roman(s):
         return LANG_ROMAN
     if is_arabic(s):
         return LANG_ARABIC
     if looks_chinese(s):
-        # further classify
-        k = classify_chinese_trad_or_simp(s)
-        return k
+        return classify_chinese_trad_or_simp(s)
     if looks_english(s):
         return LANG_EN
     if looks_german(s):
         return LANG_DE
-    # fallback: try Roman again or Arabic parse
     if s.isdigit():
         return LANG_ARABIC
-    # If we get here, treat as English to avoid crash
     return LANG_EN
 
 def to_int_by_lang(s: str, lang: str) -> int:
@@ -288,11 +272,11 @@ def to_int_by_lang(s: str, lang: str) -> int:
         return german_to_int(s)
     if lang in (LANG_ZH_TRAD, LANG_ZH_SIMP):
         return chinese_to_int(s)
-    # fallback
     raise ValueError(f"Unsupported language for value: {s}")
 
 # ------------- Tie-break priority for Part TWO -------------
 
+# Roman < English < Traditional Chinese < Simplified Chinese < German < Arabic
 LANG_PRIORITY = {
     LANG_ROMAN: 0,
     LANG_EN: 1,
@@ -318,7 +302,7 @@ def duolingo_sort():
 
     try:
         if part == "ONE":
-            # Only Roman + Arabic, return Arabic numerals as strings
+            # Part 1: Roman + Arabic -> return Arabic numerals (strings), sorted asc
             items = []
             for s in arr:
                 s2 = s.strip()
@@ -327,20 +311,19 @@ def duolingo_sort():
                 elif is_arabic(s2):
                     val = int(s2)
                 else:
-                    # If unexpected token, try to parse leniently as int
-                    # (Spec says only Roman/Arabic appear in Part 1)
+                    # be permissive but still return numeric strings
                     val = to_int_by_lang(s2, detect_language(s2))
                 items.append(val)
             items.sort()
             return jsonify({"sortedList": [str(v) for v in items]})
 
         elif part == "TWO":
-            # Mixed languages, return original representations
+            # Part 2: Mixed languages -> return original reps sorted by value,
+            # with tie-break by language priority
             annotated = []
             for s in arr:
                 s2 = s.strip()
                 lang = detect_language(s2)
-                # For Chinese, ensure accurate classification for tie-break
                 if lang in (LANG_ZH_TRAD, LANG_ZH_SIMP):
                     lang = classify_chinese_trad_or_simp(s2)
                 val = to_int_by_lang(s2, lang)
