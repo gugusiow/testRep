@@ -1,8 +1,9 @@
+from __future__ import annotations
 from flask import Flask, request, jsonify
 from functools import lru_cache
 from typing import List, Tuple, Optional, Dict, Any
 import math
-from __future__ import annotations
+import re
 
 app = Flask(__name__)
 
