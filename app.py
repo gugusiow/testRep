@@ -324,30 +324,34 @@ def find_profitable_cycles(num_nodes, edges):
 
     return all_cycles
 
-
 def pick_first_profitable_cycle(cycles):
-    # Instead of returning whatever was first discovered by BF run,
-    # pick the first valid cycle from the collected list.
-    # Optionally, you could sort to make results deterministic.
+    """
+    For challenge 1:
+    - Prefer higher gain first,
+    - Then prefer shorter cycles,
+    - Then deterministic tie-break by node sequence.
+    """
     if not cycles:
         return None
-    # Determinize: pick shortest profitable cycle, then lexicographically smallest
-    cycles_sorted = sorted(cycles, key=lambda cp: (len(cp[0]), -cp[1], tuple(cp[0])))
+    cycles_sorted = sorted(
+        cycles,
+        key=lambda cp: (-cp[1], len(cp[0]), tuple(cp[0]))
+    )
     return cycles_sorted[0]
 
-
 def pick_max_gain_cycle(cycles):
+    """
+    For challenge 2: just pick the absolute max gain.
+    """
     if not cycles:
         return None
     return max(cycles, key=lambda cp: cp[1])
-
 
 def format_response_cycle(cycle_nodes, prod_gain, goods):
     # Map node indices to names for path, ensure names list closes the loop
     path_names = [goods[i] for i in cycle_nodes]
     gain_percent = (prod_gain - 1.0) * 100.0
     return {"path": path_names, "gain": gain_percent}
-
 
 @app.route("/The-Ink-Archive", methods=['POST'])
 def solve():
