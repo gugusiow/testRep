@@ -10,6 +10,10 @@ def get_payload():
 def get_sql():
     return "Alice'; UPDATE salary SET salary=999999 WHERE name='Alice'; --"
 
+@app.route('/payload_stack', methods=['GET'])
+def get_stack():
+    return "congratulations!_you_got_the_flag!"
+
 # @app.route('/chasetheflag', methods=['POST'])
 # def receive_data():
 #     dict = {
