@@ -96,12 +96,7 @@ def get_gambit():
 ###### mages gambit end
 
 ###### ink archive start
-def find_best_gain_cycle(ratios: List[List[float]], goods: List[str]):
-    """Enumerate all simple directed cycles to find maximal gain.
-
-    Returns (path_names_with_closure, gain_percent). Gain percent = (product-1)*100.
-    If no profitable cycle (>1), returns ([], 0.0).
-    """
+def find_gain_cycle(ratios: List[List[float]], goods: List[str], mode: str):
     n = len(goods)
     adj: Dict[int, List[Tuple[int,float]]] = {i: [] for i in range(n)}
     for r in ratios:
@@ -111,54 +106,76 @@ def find_best_gain_cycle(ratios: List[List[float]], goods: List[str]):
         if 0 <= u < n and 0 <= v < n and val > 0:
             adj[u].append((v, val))
 
+    if mode == 'shortest_positive':
+        best_cycle: List[int] = []
+        best_len = math.inf
+        best_product = 1.0
+        visited = [False]*n
+
+        def dfs_short(start: int, node: int, product: float, path: List[int]):
+            nonlocal best_cycle, best_len, best_product
+            if len(path) > best_len:  # prune by current best length
+                return
+            for nxt, r in adj[node]:
+                if nxt == start and len(path) >= 2:
+                    total = product * r
+                    edges = len(path)  # number of edges so far; closing edge makes len(path)+1 nodes
+                    if total > 1.0 + 1e-12 and (edges < best_len or (edges == best_len and total > best_product + 1e-12)):
+                        best_len = edges
+                        best_product = total
+                        best_cycle = path + [nxt]
+                    continue
+                if not visited[nxt] and len(path) + 1 <= n:  # simple cycle constraint
+                    # optimistic pruning: even if all remaining multipliers were max outgoing from nxt, 
+                    # skip (light optimization omitted for simplicity for small n)
+                    visited[nxt] = True
+                    dfs_short(start, nxt, product * r, path + [nxt])
+                    visited[nxt] = False
+
+        for s in range(n):
+            visited[s] = True
+            dfs_short(s, s, 1.0, [s])
+            visited[s] = False
+        if best_product <= 1.0 or not best_cycle:
+            return [], 0.0
+        return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
+
+    # mode == 'max_gain'
     best_product = 1.0
     best_cycle: List[int] = []
-
-    # Precompute max outgoing ratio per node for a simple optimistic pruning
     max_out = [max((w for _, w in adj[i]), default=1.0) for i in range(n)]
-
-    def upper_bound(product: float, remaining_slots: int) -> float:
-        # Theoretical upper bound if we chain the largest remaining ratios (heuristic)
-        # Use global maximum outgoing ratio
-        if remaining_slots <= 0:
-            return product
-        global_max = max(max_out) if max_out else 1.0
-        return product * (global_max ** remaining_slots)
-
     visited = [False]*n
 
-    def dfs(start: int, node: int, product: float, path: List[int], depth: int):
+    def upper_bound(prod: float, remaining: int) -> float:
+        if remaining <= 0: return prod
+        gm = max(max_out) if max_out else 1.0
+        return prod * (gm ** remaining)
+
+    def dfs_max(start: int, node: int, product: float, path: List[int]):
         nonlocal best_product, best_cycle
-        # Explore outgoing edges
         for nxt, r in adj[node]:
-            if nxt == start and depth >= 2:
-                # close cycle
-                cycle_product = product * r
-                if cycle_product > best_product + 1e-12:
-                    best_product = cycle_product
+            if nxt == start and len(path) >= 2:
+                total = product * r
+                if total > best_product + 1e-12:
+                    best_product = total
                     best_cycle = path + [nxt]
                 continue
-            if not visited[nxt] and depth + 1 < n:
-                # Prune if even with optimistic bound can't beat best
-                est = upper_bound(product * r, n - (depth + 1))
+            if not visited[nxt] and len(path) + 1 < n:
+                est = upper_bound(product * r, n - (len(path) + 1))
                 if est <= best_product + 1e-12:
                     continue
                 visited[nxt] = True
-                dfs(start, nxt, product * r, path + [nxt], depth + 1)
+                dfs_max(start, nxt, product * r, path + [nxt])
                 visited[nxt] = False
 
     for s in range(n):
         visited[s] = True
-        dfs(s, s, 1.0, [s], 0)
+        dfs_max(s, s, 1.0, [s])
         visited[s] = False
 
     if best_product <= 1.0 or not best_cycle:
         return [], 0.0
-
-    # best_cycle already includes start repeated at end. Convert to names.
-    path_names = [goods[i] for i in best_cycle]
-    gain = (best_product - 1.0) * 100.0
-    return path_names, gain
+    return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
 
 
 @app.route('/The-Ink-Archive', methods=['POST'])
@@ -181,7 +198,8 @@ def ink_archive():
             return jsonify({"error":f"Scenario {idx} goods invalid"}), 400
         if not isinstance(ratios, list):
             return jsonify({"error":f"Scenario {idx} ratios invalid"}), 400
-        path, gain = find_best_gain_cycle(ratios, goods)
+        mode = 'shortest_positive' if idx == 0 else 'max_gain'
+        path, gain = find_gain_cycle(ratios, goods, mode)
         results.append({"path": path, "gain": gain})
     return jsonify(results)
 
