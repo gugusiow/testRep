@@ -499,20 +499,33 @@ def handle_slsm():
 
 
 
+
+
 games = defaultdict(lambda: {
     "heading_deg": 0,
     "last_run": 0,
     "last_best": None,
 })
 
-# Helpers
+# ---- Helpers ----
 
 def clamp_heading(h):
     h = ((h % 360) + 360) % 360
     return (round(h / 45) * 45) % 360
 
+def is_valid_sensor(sensor):
+    if not isinstance(sensor, list) or len(sensor) != 5:
+        return False
+    try:
+        for v in sensor:
+            if v not in (0, 1):
+                return False
+    except Exception:
+        return False
+    return True
+
 def walls_from_sensor(sensor):
-    # sensor: [-90, -45, 0, +45, +90] with 1 = blocked (<=12 cm), 0 = clear
+    # sensor: [-90, -45, 0, +45, +90], 1 = blocked (<=12 cm), 0 = clear
     return {
         "L90": sensor[0] == 1,
         "L45": sensor[1] == 1,
@@ -522,7 +535,6 @@ def walls_from_sensor(sensor):
     }
 
 def left_hand_choice(w):
-    # Priority: L90, L45, F, R45, R90 (first open)
     if not w["L90"]: return -90
     if not w["L45"]: return -45
     if not w["F"]:   return 0
@@ -530,156 +542,165 @@ def left_hand_choice(w):
     if not w["R90"]: return 90
     return None
 
+def can_moving_rotation(momentum, w, turn):
+    if momentum != 1:
+        return False
+    if w["F"]:
+        return False
+    if turn == "L":
+        return not w["L45"]
+    else:
+        return not w["R45"]
+
 def plan_safe_tokens(momentum, sensor):
+    if not is_valid_sensor(sensor):
+        # Failsafe: just end to avoid simulator error cascade
+        return []
+
     w = walls_from_sensor(sensor)
     tokens = []
 
-    # 1) If moving backward, always brake toward 0 first
-    if momentum < 0:
-        tokens.append("BB")
-        return tokens
+    # If moving backward, brake toward 0 first
+    if isinstance(momentum, (int, float)) and momentum < 0:
+        return ["BB"]
 
-    # 2) Dead-end: everything near blocked
     rel = left_hand_choice(w)
+
+    # Dead-end: all blocked
     if rel is None:
-        # If moving forward (momentum > 0), BB once (half-step forward) can collide if F is blocked.
-        # To avoid collision: if F is blocked and momentum > 0, prefer reducing momentum via BB
-        # but note BB still advances half-step forward. If front is blocked, first try rotate in place at 0.
         if momentum > 0:
-            # Safer approach: if momentum >= 2, BB will still move forward half-step.
-            # We cannot avoid the half-step; so reduce momentum as soon as possible.
-            tokens.append("BB")
+            return ["BB"]
         else:
-            # momentum == 0: rotate 90° left to search
-            tokens.extend(["L", "L"])
-        return tokens
+            return ["L", "L"]
 
-    # 3) If we need to turn, avoid advancing into a blocked front
-    def can_moving_rotation(turn):
-        # Only allow when momentum == 1 and the respective diagonal is open,
-        # and also front is not blocked to reduce corner clipping risk.
-        if momentum != 1:
-            return False
-        if w["F"]:
-            return False
-        if turn == "L":
-            return not w["L45"]
-        else:
-            return not w["R45"]
-
-    # 4) Actions by relative choice
+    # Straight preference
     if rel == 0:
-        # Straight
         if w["F"]:
-            # Front blocked -> do not advance. Handle turn instead: prefer left.
             if momentum > 0:
-                tokens.append("BB")  # slow down first
+                return ["BB"]
             else:
-                # rotate in place to seek opening; prefer left
-                if not w["L90"] or not w["L45"]:
-                    tokens.append("L")
-                else:
-                    tokens.append("R")
-            return tokens
-        # Front clear: accelerate up to +2, then hold
-        if momentum < 2:
-            tokens.append("F2")
-        else:
-            tokens.append("F1")
-        return tokens
+                # rotate toward left if possible, else right
+                return ["L"] if (not w["L90"] or not w["L45"]) else ["R"]
+        # Front clear: accelerate then hold
+        return ["F2"] if momentum < 2 else ["F1"]
 
+    # Left needs
     if rel in (-45, -90):
-        # Want to go left
         if rel == -90:
-            # 90° left: do in-place if at 0; otherwise reduce speed
             if momentum == 0:
-                tokens.extend(["L", "L"])
-            elif can_moving_rotation("L"):
-                tokens.append("F1L")  # -45 first; next cycle we can do another F1L or L
+                return ["L", "L"]
+            elif can_moving_rotation(momentum, w, "L"):
+                return ["F1L"]
             else:
-                tokens.append("BB")
-            return tokens
+                return ["BB"]
         else:  # -45
-            if can_moving_rotation("L"):
-                tokens.append("F1L")
+            if can_moving_rotation(momentum, w, "L"):
+                return ["F1L"]
             else:
-                if momentum == 0:
-                    tokens.append("L")
-                else:
-                    tokens.append("BB")
-            return tokens
+                return ["L"] if momentum == 0 else ["BB"]
 
+    # Right needs
     if rel in (45, 90):
-        # Want to go right
         if rel == 90:
             if momentum == 0:
-                tokens.extend(["R", "R"])
-            elif can_moving_rotation("R"):
-                tokens.append("F1R")
+                return ["R", "R"]
+            elif can_moving_rotation(momentum, w, "R"):
+                return ["F1R"]
             else:
-                tokens.append("BB")
-            return tokens
+                return ["BB"]
         else:  # 45
-            if can_moving_rotation("R"):
-                tokens.append("F1R")
+            if can_moving_rotation(momentum, w, "R"):
+                return ["F1R"]
             else:
-                if momentum == 0:
-                    tokens.append("R")
-                else:
-                    tokens.append("BB")
-            return tokens
+                return ["R"] if momentum == 0 else ["BB"]
 
     # Fallbacks
     if not w["F"]:
-        tokens.append("F1" if momentum >= 2 else "F2")
+        return ["F1"] if momentum >= 2 else ["F2"]
     else:
-        # Front blocked; reduce speed or rotate
-        if momentum > 0:
-            tokens.append("BB")
-        else:
-            tokens.append("L")
-    return tokens
+        return ["BB"] if momentum > 0 else ["L"]
+
+def ensure_valid_response(tokens, end=False):
+    # The simulator expects:
+    # - When end=false: instructions must be a non-empty list of valid tokens (strings).
+    # - When end=true: instructions can be empty.
+    valid_tokens = {
+        "F0","F1","F2","V0","V1","V2","BB","L","R",
+        "F0L","F0R","F1L","F1R","F2L","F2R","V0L","V0R","V1L","V1R","V2L","V2R","BBL","BBR",
+        # Corner tokens (we won’t generate in this controller, but whitelist not needed).
+    }
+    if end:
+        return {"instructions": [], "end": True}
+
+    if not isinstance(tokens, list):
+        tokens = []
+
+    # Coerce to list of strings and filter unknowns
+    filtered = []
+    for t in tokens:
+        ts = str(t)
+        if ts in valid_tokens:
+            filtered.append(ts)
+
+    # Guarantee non-empty
+    if not filtered:
+        filtered = ["F1"]
+
+    return {"instructions": filtered, "end": False}
+
+# ---- Endpoint ----
 
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
-    data = request.get_json(force=True)
+    try:
+        data = request.get_json(force=True)
+    except Exception:
+        # Malformed JSON: end gracefully
+        return jsonify(ensure_valid_response([], end=True))
+
+    # Required fields per spec
     required = ["game_uuid", "sensor_data", "total_time_ms", "goal_reached",
                 "best_time_ms", "run_time_ms", "run", "momentum"]
     if not isinstance(data, dict) or any(k not in data for k in required):
-        return jsonify({"instructions": [], "end": True})
+        return jsonify(ensure_valid_response([], end=True))
 
-    gid = data["game_uuid"]
-    sensor = data["sensor_data"]
-    momentum = int(data["momentum"])
-    run = int(data["run"])
-    goal_reached = bool(data["goal_reached"])
-    best_time_ms = data["best_time_ms"]
+    # Field extraction with safe defaults
+    game_uuid = data.get("game_uuid")
+    sensor = data.get("sensor_data")
+    momentum = data.get("momentum", 0)
+    run = data.get("run", 0)
+    goal_reached = bool(data.get("goal_reached", False))
+    best_time_ms = data.get("best_time_ms", None)
 
-    st = games[gid]
+    # Update simple state
+    st = games[game_uuid]
     if st["last_run"] != run:
         st["last_run"] = run
     if best_time_ms is not None:
         st["last_best"] = best_time_ms
 
+    # If goal reached, end to record score
     if goal_reached:
-        return jsonify({"instructions": [], "end": True})
+        return jsonify(ensure_valid_response([], end=True))
 
+    # Plan tokens
     try:
-        tokens = plan_safe_tokens(momentum, sensor)
+        tokens = plan_safe_tokens(int(momentum), sensor)
     except Exception:
-        return jsonify({"instructions": [], "end": True})
+        # Any planner error -> end with safety
+        return jsonify(ensure_valid_response([], end=True))
 
-    if not tokens:
-        tokens = ["F1"] if momentum >= 1 and sensor[2] == 0 else ["L"]
-
-    # Update heading for in-place L/R only
+    # Update heading only for in-place turns
     for t in tokens:
         if t == "L":
             st["heading_deg"] = clamp_heading(st["heading_deg"] - 45)
         elif t == "R":
             st["heading_deg"] = clamp_heading(st["heading_deg"] + 45)
 
-    return jsonify({"instructions": tokens, "end": False})
+    # Return guaranteed-valid response
+    resp = ensure_valid_response(tokens, end=False)
+    return jsonify(resp)
+
 
 
     
