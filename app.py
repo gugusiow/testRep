@@ -109,31 +109,37 @@ class UnionFind:
 
 @app.route('/investigate', methods=['POST'])
 def investigate():
-    data = request.get_json()
-    networks = data.get('networks', [])
-    
-    result_networks = []
-    
-    for network_data in networks:
-        network_id = network_data['networkId']
-        edges = network_data['network']
+    try:
+        data = request.get_json()
+        networks = data.get('networks', [])
         
-        uf = UnionFind()
-        extra_channels = []
+        result_networks = []
         
-        for edge in edges:
-            spy1 = edge['spy1']
-            spy2 = edge['spy2']
-            if not uf.union(spy1, spy2):
-                extra_channels.append(edge)
+        for network_data in networks:
+            network_id = network_data['networkId']
+            edges = network_data['network']
+            
+            uf = UnionFind()
+            extra_channels = []
+            
+            # Build spanning tree first
+            for edge in edges:
+                spy1 = edge['spy1']
+                spy2 = edge['spy2']
+                if not uf.union(spy1, spy2):
+                    extra_channels.append(edge)
+            
+            result_networks.append({
+                'networkId': network_id,
+                'extraChannels': extra_channels
+            })
         
-        result_networks.append({
-            'networkId': network_id,
-            'extraChannels': extra_channels
-        })
+        result = {'networks': result_networks}
+        return jsonify(result)
     
-    result = {'networks': result_networks}
-    return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    
 
 if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=5000)
