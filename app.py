@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from functools import lru_cache
 from typing import List, Tuple, Optional, Dict, Any
-import math
+from math import log, exp
 
 app = Flask(__name__)
 
@@ -96,112 +96,283 @@ def get_gambit():
 ###### mages gambit end
 
 ###### ink archive start
-def find_gain_cycle(ratios: List[List[float]], goods: List[str], mode: str):
-    n = len(goods)
-    adj: Dict[int, List[Tuple[int,float]]] = {i: [] for i in range(n)}
-    for r in ratios:
-        if len(r) != 3:
-            continue
-        u, v, val = int(r[0]), int(r[1]), float(r[2])
-        if 0 <= u < n and 0 <= v < n and val > 0:
-            adj[u].append((v, val))
+# def find_gain_cycle(ratios: List[List[float]], goods: List[str], mode: str):
+#     n = len(goods)
+#     adj: Dict[int, List[Tuple[int,float]]] = {i: [] for i in range(n)}
+#     for r in ratios:
+#         if len(r) != 3:
+#             continue
+#         u, v, val = int(r[0]), int(r[1]), float(r[2])
+#         if 0 <= u < n and 0 <= v < n and val > 0:
+#             adj[u].append((v, val))
 
-    if mode == 'shortest_positive':
-        best_cycle: List[int] = []
-        best_len = math.inf
-        best_product = 1.0
-        visited = [False]*n
+#     if mode == 'shortest_positive':
+#         best_cycle: List[int] = []
+#         best_len = math.inf
+#         best_product = 1.0
+#         visited = [False]*n
 
-        def dfs_short(start: int, node: int, product: float, path: List[int]):
-            nonlocal best_cycle, best_len, best_product
-            if len(path) > best_len:  # prune by current best length
-                return
-            for nxt, r in adj[node]:
-                if nxt == start and len(path) >= 2:
-                    total = product * r
-                    edges = len(path)  # number of edges so far; closing edge makes len(path)+1 nodes
-                    if total > 1.0 + 1e-12 and (edges < best_len or (edges == best_len and total > best_product + 1e-12)):
-                        best_len = edges
-                        best_product = total
-                        best_cycle = path + [nxt]
-                    continue
-                if not visited[nxt] and len(path) + 1 <= n:  # simple cycle constraint
-                    # optimistic pruning: even if all remaining multipliers were max outgoing from nxt, 
-                    # skip (light optimization omitted for simplicity for small n)
-                    visited[nxt] = True
-                    dfs_short(start, nxt, product * r, path + [nxt])
-                    visited[nxt] = False
+#         def dfs_short(start: int, node: int, product: float, path: List[int]):
+#             nonlocal best_cycle, best_len, best_product
+#             if len(path) > best_len:  # prune by current best length
+#                 return
+#             for nxt, r in adj[node]:
+#                 if nxt == start and len(path) >= 2:
+#                     total = product * r
+#                     edges = len(path)  # number of edges so far; closing edge makes len(path)+1 nodes
+#                     if total > 1.0 + 1e-12 and (edges < best_len or (edges == best_len and total > best_product + 1e-12)):
+#                         best_len = edges
+#                         best_product = total
+#                         best_cycle = path + [nxt]
+#                     continue
+#                 if not visited[nxt] and len(path) + 1 <= n:  # simple cycle constraint
+#                     # optimistic pruning: even if all remaining multipliers were max outgoing from nxt, 
+#                     # skip (light optimization omitted for simplicity for small n)
+#                     visited[nxt] = True
+#                     dfs_short(start, nxt, product * r, path + [nxt])
+#                     visited[nxt] = False
 
-        for s in range(n):
-            visited[s] = True
-            dfs_short(s, s, 1.0, [s])
-            visited[s] = False
-        if best_product <= 1.0 or not best_cycle:
-            return [], 0.0
-        return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
+#         for s in range(n):
+#             visited[s] = True
+#             dfs_short(s, s, 1.0, [s])
+#             visited[s] = False
+#         if best_product <= 1.0 or not best_cycle:
+#             return [], 0.0
+#         return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
 
-    # mode == 'max_gain'
-    best_product = 1.0
-    best_cycle: List[int] = []
-    max_out = [max((w for _, w in adj[i]), default=1.0) for i in range(n)]
-    visited = [False]*n
+#     # mode == 'max_gain'
+#     best_product = 1.0
+#     best_cycle: List[int] = []
+#     max_out = [max((w for _, w in adj[i]), default=1.0) for i in range(n)]
+#     visited = [False]*n
 
-    def upper_bound(prod: float, remaining: int) -> float:
-        if remaining <= 0: return prod
-        gm = max(max_out) if max_out else 1.0
-        return prod * (gm ** remaining)
+#     def upper_bound(prod: float, remaining: int) -> float:
+#         if remaining <= 0: return prod
+#         gm = max(max_out) if max_out else 1.0
+#         return prod * (gm ** remaining)
 
-    def dfs_max(start: int, node: int, product: float, path: List[int]):
-        nonlocal best_product, best_cycle
-        for nxt, r in adj[node]:
-            if nxt == start and len(path) >= 2:
-                total = product * r
-                if total > best_product + 1e-12:
-                    best_product = total
-                    best_cycle = path + [nxt]
+#     def dfs_max(start: int, node: int, product: float, path: List[int]):
+#         nonlocal best_product, best_cycle
+#         for nxt, r in adj[node]:
+#             if nxt == start and len(path) >= 2:
+#                 total = product * r
+#                 if total > best_product + 1e-12:
+#                     best_product = total
+#                     best_cycle = path + [nxt]
+#                 continue
+#             if not visited[nxt] and len(path) + 1 < n:
+#                 est = upper_bound(product * r, n - (len(path) + 1))
+#                 if est <= best_product + 1e-12:
+#                     continue
+#                 visited[nxt] = True
+#                 dfs_max(start, nxt, product * r, path + [nxt])
+#                 visited[nxt] = False
+
+#     for s in range(n):
+#         visited[s] = True
+#         dfs_max(s, s, 1.0, [s])
+#         visited[s] = False
+
+#     if best_product <= 1.0 or not best_cycle:
+#         return [], 0.0
+#     return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
+
+
+# @app.route('/The-Ink-Archive', methods=['POST'])
+# def ink_archive():
+#     try:
+#         payload = request.get_json(force=True)
+#     except Exception:
+#         return jsonify({"error":"Invalid or missing JSON"}), 400
+#     if not isinstance(payload, list):
+#         return jsonify({"error":"Top-level JSON must be a list"}), 400
+#     results = []
+#     for idx, scenario in enumerate(payload):
+#         if not isinstance(scenario, dict):
+#             return jsonify({"error":f"Scenario {idx} not an object"}), 400
+#         if 'ratios' not in scenario or 'goods' not in scenario:
+#             return jsonify({"error":f"Scenario {idx} missing 'ratios' or 'goods'"}), 400
+#         ratios = scenario['ratios']
+#         goods = scenario['goods']
+#         if not isinstance(goods, list) or not all(isinstance(g, str) for g in goods):
+#             return jsonify({"error":f"Scenario {idx} goods invalid"}), 400
+#         if not isinstance(ratios, list):
+#             return jsonify({"error":f"Scenario {idx} ratios invalid"}), 400
+#         mode = 'shortest_positive' if idx == 0 else 'max_gain'
+#         path, gain = find_gain_cycle(ratios, goods, mode)
+#         results.append({"path": path, "gain": gain})
+#     return jsonify(results)
+
+def find_profitable_cycles(num_nodes, edges):
+    # Build adjacency for reconstruction of product later
+    adj_rate = {}
+    for u, v, r in edges:
+        adj_rate[(u, v)] = r
+
+    all_cycles = []          # list of (cycle_nodes, product)
+    seen_cycles_canonical = set()
+
+    def canonicalize_cycle(cycle):
+        # cycle is like [a,b,c,a]; we canonicalize by removing last, rotating so min index first, and direction normalization.
+        core = cycle[:-1]
+        n = len(core)
+        min_idx = min(range(n), key=lambda i: core[i])
+        rotated = core[min_idx:] + core[:min_idx]
+        # Also consider reversed
+        core_rev = list(reversed(core))
+        min_idx_rev = min(range(n), key=lambda i: core_rev[i])
+        rotated_rev = core_rev[min_idx_rev:] + core_rev[:min_idx_rev]
+        canon = tuple(rotated) if rotated < rotated_rev else tuple(rotated_rev)
+        return canon
+
+    for src in range(num_nodes):
+        INF = float('inf')
+        dist = [0.0] * num_nodes
+        pred = [-1] * num_nodes
+
+        # Initialize
+        for i in range(num_nodes):
+            dist[i] = 0.0
+            pred[i] = -1
+
+        # Build weights
+        weighted_edges = []
+        for u, v, r in edges:
+            if r <= 0:
                 continue
-            if not visited[nxt] and len(path) + 1 < n:
-                est = upper_bound(product * r, n - (len(path) + 1))
-                if est <= best_product + 1e-12:
-                    continue
-                visited[nxt] = True
-                dfs_max(start, nxt, product * r, path + [nxt])
-                visited[nxt] = False
+            w = -log(r)
+            weighted_edges.append((u, v, w))
 
-    for s in range(n):
-        visited[s] = True
-        dfs_max(s, s, 1.0, [s])
-        visited[s] = False
+        # Relax edges N-1 times
+        for _ in range(num_nodes - 1):
+            updated = False
+            for u, v, w in weighted_edges:
+                if dist[u] + w < dist[v] - 1e-15:
+                    dist[v] = dist[u] + w
+                    pred[v] = u
+                    updated = True
+            if not updated:
+                break
 
-    if best_product <= 1.0 or not best_cycle:
-        return [], 0.0
-    return [goods[i] for i in best_cycle], (best_product - 1.0) * 100.0
+        # Check for negative cycles and reconstruct
+        in_cycle = [-1] * num_nodes
+        cycle_entry = -1
+        for u, v, w in weighted_edges:
+            if dist[u] + w < dist[v] - 1e-15:
+                pred[v] = u
+                cycle_entry = v
+                break
+
+        if cycle_entry == -1:
+            continue
+
+        # Move cycle_entry forward N times to ensure it is inside the cycle
+        x = cycle_entry
+        for _ in range(num_nodes):
+            x = pred[x]
+
+        # Reconstruct cycle
+        cycle_nodes = []
+        cur = x
+        while True:
+            cycle_nodes.append(cur)
+            cur = pred[cur]
+            if cur == x or cur == -1:
+                break
+
+        if cur == -1 or len(cycle_nodes) < 2:
+            continue
+
+        cycle_nodes.reverse()
+        cycle_nodes.append(cycle_nodes[0])  # close the cycle
+
+        canon = canonicalize_cycle(cycle_nodes)
+        if canon in seen_cycles_canonical:
+            continue
+        seen_cycles_canonical.add(canon)
+
+        # Compute product along the cycle
+        prod = 1.0
+        ok = True
+        for i in range(len(cycle_nodes) - 1):
+            u = cycle_nodes[i]
+            v = cycle_nodes[i + 1]
+            r = adj_rate.get((u, v))
+            if r is None:
+                ok = False
+                break
+            prod *= r
+        if not ok:
+            continue
+
+        if prod > 1.0 + 1e-12:
+            all_cycles.append((cycle_nodes, prod))
+
+    return all_cycles
 
 
-@app.route('/The-Ink-Archive', methods=['POST'])
-def ink_archive():
-    try:
-        payload = request.get_json(force=True)
-    except Exception:
-        return jsonify({"error":"Invalid or missing JSON"}), 400
-    if not isinstance(payload, list):
-        return jsonify({"error":"Top-level JSON must be a list"}), 400
+def pick_first_profitable_cycle(cycles):
+    # Just return the first found profitable cycle
+    return cycles[0] if cycles else None
+
+
+def pick_max_gain_cycle(cycles):
+    if not cycles:
+        return None
+    return max(cycles, key=lambda cp: cp[1])
+
+
+def format_response_cycle(cycle_nodes, prod_gain, goods):
+    # Map node indices to names for path, ensure names list closes the loop
+    path_names = [goods[i] for i in cycle_nodes]
+    gain_percent = (prod_gain - 1.0) * 100.0
+    return {"path": path_names, "gain": gain_percent}
+
+
+@app.route("/The-Ink-Archive", methods=['POST'])
+def solve():
+    payload = request.get_json(force=True)
+    if not isinstance(payload, list) or len(payload) != 2:
+        return jsonify({"error": "Body must be a JSON array with 2 items"}), 400
+
     results = []
-    for idx, scenario in enumerate(payload):
-        if not isinstance(scenario, dict):
-            return jsonify({"error":f"Scenario {idx} not an object"}), 400
-        if 'ratios' not in scenario or 'goods' not in scenario:
-            return jsonify({"error":f"Scenario {idx} missing 'ratios' or 'goods'"}), 400
-        ratios = scenario['ratios']
-        goods = scenario['goods']
-        if not isinstance(goods, list) or not all(isinstance(g, str) for g in goods):
-            return jsonify({"error":f"Scenario {idx} goods invalid"}), 400
-        if not isinstance(ratios, list):
-            return jsonify({"error":f"Scenario {idx} ratios invalid"}), 400
-        mode = 'shortest_positive' if idx == 0 else 'max_gain'
-        path, gain = find_gain_cycle(ratios, goods, mode)
-        results.append({"path": path, "gain": gain})
-    return jsonify(results)
+
+    # Process each challenge
+    for idx, item in enumerate(payload):
+        goods = item.get("goods", [])
+        ratios = item.get("ratios", [])
+        if not goods or not ratios:
+            return jsonify({"error": f"Item {idx}: 'goods' and 'ratios' required"}), 400
+
+        n = len(goods)
+        edges = []
+        for trip in ratios:
+            if not (isinstance(trip, list) and len(trip) == 3):
+                return jsonify({"error": f"Item {idx}: each ratio must be [u, v, rate]"}), 400
+            u, v, r = trip
+            u = int(u)
+            v = int(v)
+            r = float(r)
+            if u < 0 or u >= n or v < 0 or v >= n:
+                return jsonify({"error": f"Item {idx}: u,v out of range"}), 400
+            edges.append((u, v, r))
+
+        cycles = find_profitable_cycles(n, edges)
+
+        if idx == 0:
+            chosen = pick_first_profitable_cycle(cycles)
+        else:
+            chosen = pick_max_gain_cycle(cycles)
+
+        if not chosen:
+            # No arbitrage found
+            results.append({"path": [], "gain": 0.0})
+            continue
+
+        cycle_nodes, prod = chosen
+        results.append(format_response_cycle(cycle_nodes, prod, goods))
+
+    return jsonify(results), 200
 
 ###### ink archive end
 
