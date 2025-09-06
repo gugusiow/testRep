@@ -111,7 +111,13 @@ class UnionFind:
 def investigate():
     try:
         data = request.get_json()
-        networks = data.get('networks', [])
+        # Accept either a dict with 'networks' or a list directly
+        if isinstance(data, list):
+            networks = data
+        elif isinstance(data, dict):
+            networks = data.get('networks', [])
+        else:
+            return jsonify({'error': 'Invalid input format'}), 400
         
         result_networks = []
         
@@ -140,7 +146,6 @@ def investigate():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
     
-
 if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=5000)
     port = int(os.environ.get("PORT", 5000)) # Get the PORT env var, default to 5000 for local run
