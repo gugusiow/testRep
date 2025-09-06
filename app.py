@@ -22,11 +22,11 @@ def get_stack():
 @app.route('/chasetheflag', methods=['POST'])
 def chase_flags():
     flags = {
-        "challenge1": "your_flag_1",
-        "challenge2": "your_flag_2",
-        "challenge3": "your_flag_3",
-        "challenge4": "your_flag_4",
-        "challenge5": "your_flag_5"
+        "challenge1": "UBS{}",
+        "challenge2": "UBS{}",
+        "challenge3": "UBS{}",
+        "challenge4": "UBS{}",
+        "challenge5": "UBS{474owrgw8fbyy}"  # UBS{16lt0tt13zm1es}
     }
     return jsonify(flags), 201
 
