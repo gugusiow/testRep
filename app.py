@@ -30,42 +30,35 @@ def chase_flags():
 
 ####### mages gambit start
 def earliest_clear_time(intel: List[List[int]], reserve: int, stamina: int) -> int:
-    """Compute earliest total minutes to clear all waves and end in cooldown.
+    """Compute earliest finish time (in minutes) including mandatory final cooldown.
 
-    Assumptions:
-    - intel is a sequence of [front, mana_cost] and must be processed in order.
-    - Each processed intel requires spending mana_cost mana and 1 stamina (a "spell").
-    - Starting (or switching) to a front costs 10 minutes (target + AOE cast).
-      If the previous processed intel was on the same front and no cooldown occurred in between,
-      extending costs 0 additional minutes (still consumes mana + stamina).
-    - Cooldown costs 10 minutes and restores mana to full reserve and stamina to full.
-    - Final state MUST be immediately after a cooldown (one last 10-minute cooldown after final wave).
-    - Cooldown is only taken when required (cannot cast next wave due to mana/stamina) since taking it
-      early never reduces time (it always adds 10 and doesn't avoid a future 10 when switching fronts).
+    Rules (aligned to expected outputs provided):
+    - Waves processed sequentially: each wave consumes its mana cost and 1 stamina.
+    - Time cost per wave: 10 minutes if front differs from previous processed wave OR previous reset via cooldown;
+      0 minutes if same front as immediately prior processed wave (extension).
+    - If insufficient mana OR stamina to cast the next wave, perform a cooldown (+10 min) restoring resources.
+    - After last wave, perform one final cooldown (+10 min) before reporting total time.
+    - If any wave's mana cost exceeds reserve, return -1 (impossible).
+    - Strategy: never cooldown early (would add 10 and break possible zero-time chain).
     """
-
     waves: List[Tuple[int, int]] = [(f, c) for f, c in intel]
     n = len(waves)
+    if any(c > reserve for _, c in waves):
+        return -1
 
     @lru_cache(maxsize=None)
     def dp(i: int, mana: int, stam: int, last_front: Optional[int]) -> int:
-        # All waves cleared -> mandatory final cooldown
         if i == n:
-            return 10  # last cooldown
-
+            return 10  # final cooldown
         front, cost = waves[i]
+        same = (last_front == front)
+        can_cast = (cost <= mana) and (stam > 0)
         best = float('inf')
-
-        can_cast = (cost <= mana and stam > 0)
-
         if can_cast:
-            time_cost = 0 if last_front == front else 10
+            time_cost = 0 if same else 10
             best = min(best, time_cost + dp(i + 1, mana - cost, stam - 1, front))
-
-        # If we cannot cast we must cooldown (restore resources, lose front continuity)
         if not can_cast:
             best = min(best, 10 + dp(i, reserve, stamina, None))
-
         return best
 
     return dp(0, reserve, stamina, None)
@@ -112,7 +105,6 @@ def get_gambit():
         results.append({"time": time_needed})
 
     return jsonify(results)
-
 ###### mages gambit end
 
 if __name__ == '__main__':
