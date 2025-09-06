@@ -27,12 +27,25 @@ def solve_by_prefix(slots):
             continue
         if s >= e:
             continue
+        
+        # Clamp start to [0, MAX_HOUR]
+        s_orig = s
         s = max(0, min(MAX_HOUR, s))
-        e = max(0, min(MAX_HOUR, e))
+        
+        # For end, we need to handle values > MAX_HOUR differently
+        # If end > MAX_HOUR, clamp to MAX_HOUR + 1 so the interval [s, MAX_HOUR] is valid
+        e_orig = e
+        if e > MAX_HOUR:
+            e = MAX_HOUR + 1
+        else:
+            e = max(0, e)
+        
         if s >= e:
             continue
+            
         delta[s] += 1
-        delta[e] -= 1
+        if e <= MAX_HOUR:
+            delta[e] -= 1
 
     merged = []
     cur = 0
@@ -55,6 +68,11 @@ def solve_by_prefix(slots):
             merged.append([start_t, t])
             in_busy = False
             start_t = None
+    
+    # If we're still in a busy period at the end, close it at MAX_HOUR + 1
+    if in_busy:
+        merged.append([start_t, MAX_HOUR + 1])
+        in_busy = False
 
     # merged blocks are discovered in chronological order:
     # starts and ends are strictly increasing → end-time ascending already.
