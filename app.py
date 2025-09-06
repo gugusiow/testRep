@@ -95,12 +95,13 @@ def solve(input_obj):
     }
 
 # ----------------- Flask app -----------------
-app = Flask(_name_)
+app = Flask(__name__)
 
 # @app.get("/")
 # def health():
 #     return "Princess Diaries API is running."
 
+# @app.route("/princess-diaires", methods=['POST'])
 @app.post("/princess-diaries")
 def princess_diaries():
     try:
