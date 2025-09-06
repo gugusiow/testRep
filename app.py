@@ -1,9 +1,9 @@
-from flask import Flask, request, jsonify
-import os
-import math
-from collections import defaultdict
+# from flask import Flask, request, jsonify
+# import os
+# import math
+# from collections import defaultdict
 
-app = Flask(__name__)
+# app = Flask(__name__)
 
 # @app.route('/trivia', methods=['GET'])
 # def home():
@@ -125,102 +125,79 @@ app = Flask(__name__)
 #     except Exception as e:
 #         return jsonify({"error": str(e)}), 400
 
-from typing import List, Tuple
-import json
+from typing import List, Dict, Any
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import uvicorn
 
-def merge_intervals(intervals: List[List[int]]) -> List[List[int]]:
-    """Merge overlapping intervals and sort them"""
-    if not intervals:
+app = FastAPI()
+
+def merge_slots(slots: List[List[int]]) -> List[List[int]]:
+    if not slots:
         return []
-    
-    # Sort intervals by start time
-    intervals.sort(key=lambda x: x[0])
-    
-    merged = []
-    current_start, current_end = intervals[0]
-    
-    for interval in intervals[1:]:
-        start, end = interval
-        
-        # If current interval overlaps with next interval, merge them
-        if start <= current_end:
-            current_end = max(current_end, end)
+    # Sort by start time, then by end time
+    slots_sorted = sorted(slots, key=lambda x: (x[0], x[1]))
+    merged: List[List[int]] = []
+    cur_start, cur_end = slots_sorted[0]
+    for s, e in slots_sorted[1:]:
+        # Overlap or touching (e.g., [5,8] and [8,10] -> merge to [5,10])
+        if s <= cur_end:
+            cur_end = max(cur_end, e)
         else:
-            # No overlap, add current interval to result
-            merged.append([current_start, current_end])
-            current_start, current_end = start, end
-    
-    # Add the last interval
-    merged.append([current_start, current_end])
-    
+            merged.append([cur_start, cur_end])
+            cur_start, cur_end = s, e
+    merged.append([cur_start, cur_end])
     return merged
 
-def min_boats_needed(intervals: List[List[int]]) -> int:
-    """Find minimum number of boats needed using sweep-line algorithm"""
-    if not intervals:
+def min_boats_needed(slots: List[List[int]]) -> int:
+    if not slots:
         return 0
-    
-    # Create events: (time, +1 for start, -1 for end)
-    events = []
-    for start, end in intervals:
-        events.append((start, 1))
-        events.append((end, -1))
-    
-    # Sort events by time, and for same time, process ends first
-    events.sort(key=lambda x: (x[0], x[1]))
-    
-    max_boats = 0
-    current_boats = 0
-    
-    for time, event_type in events:
-        current_boats += event_type
-        max_boats = max(max_boats, current_boats)
-    
+    starts = sorted(s for s, _ in slots)
+    ends = sorted(e for _, e in slots)
+    i = j = 0
+    boats = max_boats = 0
+    n = len(slots)
+    # If bookings are [start, end] with end exclusive, the equality rule s < e is correct.
+    # The problem’s examples treat touching [5,8] and [8,10] as not overlapping for min boats.
+    while i < n and j < n:
+        if starts[i] < ends[j]:
+            boats += 1
+            max_boats = max(max_boats, boats)
+            i += 1
+        else:
+            boats -= 1
+            j += 1
     return max_boats
 
-def solve_sailing_club(test_cases):
-    solutions = []
-    
-    for test_case in test_cases:
-        intervals = test_case["input"]
-        
-        # Part 1: Merge intervals
-        merged_slots = merge_intervals(intervals)
-        
-        # Part 2: Find minimum boats needed
-        min_boats = min_boats_needed(intervals)
-        
-        solutions.append({
-            "id": test_case["id"],
-            "sortedMergedSlots": merged_slots,
-            "minBoatsNeeded": min_boats
-        })
-    
-    return {"solutions": solutions}
+def solve_test_case(tc: Dict[str, Any]) -> Dict[str, Any]:
+    tc_id = tc.get("id")
+    slots = tc.get("input", [])
+    merged = merge_slots(slots)
+    boats = min_boats_needed(slots)
+    return {
+        "id": tc_id,
+        "sortedMergedSlots": merged,
+        "minBoatsNeeded": boats,
+    }
 
-# Flask endpoint would look like this:
-
-from flask_cors import CORS
-
-app = Flask(__name__)
-CORS(app)
-
-@app.route('/sailing-club/submission', methods=['POST'])
-def sailing_club_endpoint():
+@app.post("/sailing-club/submission")
+async def submission(request: Request):
     try:
-        data = request.get_json()
-        test_cases = data.get('testCases', [])
-        result = solve_sailing_club(test_cases)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        body = await request.json()
+    except Exception:
+        # Ensure we always return JSON (avoid HTML error pages)
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON in request body"})
+    test_cases = body.get("testCases", [])
+    solutions = [solve_test_case(tc) for tc in test_cases]
+    return JSONResponse(content={"solutions": solutions})
 
-# if __name__ == '__main__':
-#     app.run(debug=True)
+if __name__ == "__main__":
+    # Run: python app.py
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
     
-if __name__ == '__main__':
-    #app.run(host='0.0.0.0', port=5000)
-    port = int(os.environ.get("PORT", 5000)) # Get the PORT env var, default to 5000 for local run
-    app.run(host='0.0.0.0', port=port) # You MUST set host to '0.0.0.0'
+# if __name__ == '__main__':
+#     #app.run(host='0.0.0.0', port=5000)
+#     port = int(os.environ.get("PORT", 5000)) # Get the PORT env var, default to 5000 for local run
+#     app.run(host='0.0.0.0', port=port) # You MUST set host to '0.0.0.0'
