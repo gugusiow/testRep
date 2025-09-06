@@ -50,6 +50,8 @@ from flask import Flask, request, jsonify
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
+# Cap request size to avoid huge base64 bodies causing memory spikes
+app.config['MAX_CONTENT_LENGTH'] = 10 * 1024 * 1024  # 10 MB
 
 # ----------------------------
 # Utility dataclasses
@@ -166,6 +168,10 @@ def detect_edge_segments(gray: np.ndarray) -> List[Tuple[int, int, int, int]]:
 _DIGIT_TEMPLATES = {}
 
 def _init_digit_templates():
+    """Build simple glyph templates for 0-9 using OpenCV's Hershey font.
+    Fix: use cv2.findNonZero + cv2.boundingRect on points (not on the raw image),
+    which avoids a crash some OpenCV builds hit when passing a binary image directly.
+    """
     global _DIGIT_TEMPLATES
     if _DIGIT_TEMPLATES:
         return
@@ -173,10 +179,15 @@ def _init_digit_templates():
     for d in range(10):
         canvas = np.zeros((40, 30), dtype=np.uint8)
         cv2.putText(canvas, str(d), (3, 32), font, 1.2, 255, 2, cv2.LINE_AA)
-        # Binarize and trim
+        # Binarize and trim to tight bounding box using non-zero points
         _, bw = cv2.threshold(canvas, 0, 255, cv2.THRESH_BINARY)
-        x, y, w, h = cv2.boundingRect(bw)
-        tpl = bw[y:y+h, x:x+w]
+        pts = cv2.findNonZero(bw)
+        if pts is None:
+            # Fallback: keep the raw canvas if detection failed (rare)
+            tpl = bw
+        else:
+            x, y, w, h = cv2.boundingRect(pts)
+            tpl = bw[y:y+h, x:x+w]
         _DIGIT_TEMPLATES[d] = tpl
 
 
