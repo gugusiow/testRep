@@ -125,24 +125,50 @@
 #     except Exception as e:
 #         return jsonify({"error": str(e)}), 400
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
 app = FastAPI()
 
+def normalize_slots(slots: Any) -> Tuple[List[List[int]], Optional[str]]:
+    """
+    Validate and normalize the 'input' field to a list of [start, end] integer pairs.
+    Returns (normalized_slots, error_message_if_any).
+    On validation issues, it tries to coerce safely; if impossible, returns empty list with an error.
+    """
+    if slots is None:
+        return [], None
+    if not isinstance(slots, list):
+        return [], "input must be a list"
+    norm: List[List[int]] = []
+    for idx, it in enumerate(slots):
+        if not (isinstance(it, (list, tuple)) and len(it) == 2):
+            return [], f"input[{idx}] must be a pair [start, end]"
+        s, e = it[0], it[1]
+        if not (isinstance(s, int) and isinstance(e, int)):
+            return [], f"input[{idx}] values must be integers"
+        # Basic constraints from problem; if invalid, skip or clamp?
+        # We'll skip invalid intervals but still return a solution entry.
+        if not (0 <= s <= 4096 and 0 <= e <= 4096 and s < e):
+            # Skip invalid interval but keep processing others
+            continue
+        norm.append([s, e])
+    # Sort here to ensure determinism even if empty or partially invalid
+    norm.sort(key=lambda x: (x[0], x[1]))
+    return norm, None
+
 def merge_slots(slots: List[List[int]]) -> List[List[int]]:
     if not slots:
         return []
-    # Sort by start time, then by end time
-    slots_sorted = sorted(slots, key=lambda x: (x[0], x[1]))
     merged: List[List[int]] = []
-    cur_start, cur_end = slots_sorted[0]
-    for s, e in slots_sorted[1:]:
-        # Overlap or touching (e.g., [5,8] and [8,10] -> merge to [5,10])
+    cur_start, cur_end = slots[0]
+    for s, e in slots[1:]:
+        # Merge overlapping or touching intervals
         if s <= cur_end:
-            cur_end = max(cur_end, e)
+            if e > cur_end:
+                cur_end = e
         else:
             merged.append([cur_start, cur_end])
             cur_start, cur_end = s, e
@@ -157,23 +183,30 @@ def min_boats_needed(slots: List[List[int]]) -> int:
     i = j = 0
     boats = max_boats = 0
     n = len(slots)
-    # If bookings are [start, end] with end exclusive, the equality rule s < e is correct.
-    # The problem’s examples treat touching [5,8] and [8,10] as not overlapping for min boats.
+    # Use strict inequality so [a,b] and [b,c] are not overlapping (end is exclusive)
     while i < n and j < n:
         if starts[i] < ends[j]:
             boats += 1
-            max_boats = max(max_boats, boats)
+            if boats > max_boats:
+                max_boats = boats
             i += 1
         else:
             boats -= 1
             j += 1
     return max_boats
 
-def solve_test_case(tc: Dict[str, Any]) -> Dict[str, Any]:
+def solve_one(tc: Dict[str, Any]) -> Dict[str, Any]:
     tc_id = tc.get("id")
-    slots = tc.get("input", [])
+    # Always include id; if missing, put a safe fallback string so response is valid JSON
+    if tc_id is None:
+        tc_id = ""
+
+    slots_raw = tc.get("input")
+    slots, _err = normalize_slots(slots_raw)
     merged = merge_slots(slots)
     boats = min_boats_needed(slots)
+
+    # Always include sortedMergedSlots; include minBoatsNeeded to aim for full score
     return {
         "id": tc_id,
         "sortedMergedSlots": merged,
@@ -182,19 +215,25 @@ def solve_test_case(tc: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.post("/sailing-club/submission")
 async def submission(request: Request):
+    # Always respond JSON to avoid HTML errors at clients
     try:
         body = await request.json()
     except Exception:
-        # Ensure we always return JSON (avoid HTML error pages)
         return JSONResponse(status_code=400, content={"error": "Invalid JSON in request body"})
-    test_cases = body.get("testCases", [])
-    solutions = [solve_test_case(tc) for tc in test_cases]
+    test_cases = body.get("testCases")
+    if test_cases is None:
+        # Still return the required envelope
+        return JSONResponse(content={"solutions": []})
+    if not isinstance(test_cases, list):
+        # Coerce to empty if malformed
+        test_cases = []
+
+    solutions = [solve_one(tc if isinstance(tc, dict) else {}) for tc in test_cases]
     return JSONResponse(content={"solutions": solutions})
 
 if __name__ == "__main__":
-    # Run: python app.py
+    # Run locally: python app.py
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
 
     
 # if __name__ == '__main__':
