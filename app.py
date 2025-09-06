@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+import os
 import math
 
 app = Flask(__name__)
@@ -17,6 +18,15 @@ app = Flask(__name__)
 #     result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
     
 #     return jsonify(result)
+
+def calculate_distance(point1, point2):
+    x1, y1 = point1
+    x2, y2 = point2
+    return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+
+def calculate_latency_points(distance):
+    points = max(0, 30 - distance)
+    return round(points)
 
 @app.route('/ticketing-agent', methods=['POST'])
 def ticketing_agent():
@@ -50,15 +60,6 @@ def ticketing_agent():
                 
                 if credit_card in priority and priority[credit_card] == concert_name:
                     points += 50
-
-                def calculate_distance(point1, point2):
-                    x1, y1 = point1
-                    x2, y2 = point2
-                    return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-                def calculate_latency_points(distance):
-                    points = max(0, 30 - distance)
-                    return round(points)
                 
                 distance = calculate_distance(customer_location, booking_center)
                 latency_points = calculate_latency_points(distance)
@@ -77,4 +78,6 @@ def ticketing_agent():
        return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    #app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000)) # Get the PORT env var, default to 5000 for local run
+    app.run(host='0.0.0.0', port=port) # You MUST set host to '0.0.0.0'
