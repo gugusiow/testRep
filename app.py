@@ -1,241 +1,152 @@
 # app.py
 from flask import Flask, request, jsonify
-from collections import defaultdict
 import os
+from collections import defaultdict
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-# ----------------------------
-# In-memory game state
-# ----------------------------
-# games[(challenger_id, game_id)] = {
-#   "grid_n": int,
-#   "num_walls": int,
-#   "crows": { crow_id: {"x": int, "y": int} },
-#   "walls": set[(x,y)],
-#   "scanned_centers": set[(x,y)],   # positions where we've scanned
-#   "boustro_row": dict[crow_id -> int],   # current row assignment for raster scan
-#   "boustro_dir": dict[crow_id -> int],   # +1 for east, -1 for west
-# }
-games = {}
+def extra_channels_tarjan(edges):
+    """
+    edges: list of dicts [{"spy1": str, "spy2": str}, ...]
+    returns: list of dicts (same order/shape) that are NOT bridges (i.e., safe to cut)
+    Notes:
+      - Self-loops are always non-bridges.
+      - Parallel edges between the same two nodes mean none of those parallel edges is a bridge.
+    """
+    n_edges = len(edges)
 
-# ----------------------------
-# Helpers
-# ----------------------------
-def key_xy(x, y):
-    return f"{x}-{y}"
+    # Map edge id -> (u, v) with undirected normalization key for multiplicity
+    u = [None] * n_edges
+    v = [None] * n_edges
+    key = [None] * n_edges
 
-def in_bounds(x, y, n):
-    return 0 <= x < n and 0 <= y < n
+    # Build adjacency with edge ids (keep MULTI-EDGES)
+    adj = defaultdict(list)
+    multiplicity = defaultdict(int)
 
-def parse_initial_test_case(body):
-    """Extract initial test_case payload."""
-    test = body.get("test_case", {}) or {}
-    crows = test.get("crows", []) or []
-    grid_n = int(test.get("length_of_grid", 0))
-    num_walls = int(test.get("num_of_walls", 0))
-    return crows, grid_n, num_walls
+    for i, e in enumerate(edges):
+        a, b = e["spy1"], e["spy2"]
+        u[i], v[i] = a, b
+        if a == b:
+            # self-loop: treat specially later
+            key[i] = (a, a)  # not using frozenset to avoid type mix; self-loop unique
+            multiplicity[key[i]] += 1
+            # no need to add to adjacency (doesn't affect connectivity/bridges)
+            continue
+        k = frozenset((a, b))
+        key[i] = k
+        multiplicity[k] += 1
+        adj[a].append((b, i))
+        adj[b].append((a, i))
 
-def apply_move_result(state, prev):
-    """Update crow position after a move."""
-    cid = str(prev["crow_id"])
-    x, y = prev["move_result"]
-    # Clamp to bounds just in case input is noisy
-    n = state["grid_n"]
-    x = max(0, min(n-1, int(x)))
-    y = max(0, min(n-1, int(y)))
-    state["crows"][cid]["x"] = x
-    state["crows"][cid]["y"] = y
+    # Tarjan bridge-finding
+    time = 0
+    tin = {}
+    low = {}
+    visited = set()
+    parent_edge = {}  # node -> incoming edge id from parent (to skip immediate back)
 
-def apply_scan_result(state, prev):
-    """Ingest a 5x5 scan centered at the crow; record walls and mark scanned center."""
-    cid = str(prev["crow_id"])
-    scan = prev["scan_result"]
-    cx = state["crows"][cid]["x"]
-    cy = state["crows"][cid]["y"]
-    n = state["grid_n"]
+    bridges = set()
 
-    # Mark that we scanned this center already
-    state["scanned_centers"].add((cx, cy))
+    def dfs(start):
+        nonlocal time
+        stack = [(start, None, iter(adj[start]))]
+        visited.add(start)
+        time += 1
+        tin[start] = low[start] = time
+        parent_edge[start] = None
 
-    # scan is a 5x5 grid; indices (0..4), center is (2,2)
-    # Translate each cell to absolute (x,y): dx = j-2, dy = i-2
-    for i in range(5):
-        for j in range(5):
-            sym = scan[i][j]
-            ax = cx + (j - 2)
-            ay = cy + (i - 2)
-            if sym == "X":
-                continue  # out-of-bounds
-            if not in_bounds(ax, ay, n):
+        while stack:
+            node, parent, it = stack[-1]
+            try:
+                to, eid = next(it)
+            except StopIteration:
+                # On unwind, try to propagate low-link to parent
+                stack.pop()
+                if parent is not None:
+                    # parent-edge id
+                    peid = parent_edge[node]
+                    # node was discovered from parent
+                    low[parent] = min(low[parent], low[node])
+                    # Bridge check only applies to tree edges, and only if single-edge between endpoints
+                    # (multi-edge pair can never be a bridge)
+                    pair_key = frozenset((parent, node))
+                    if low[node] > tin[parent] and multiplicity.get(pair_key, 0) == 1:
+                        # mark the unique tree edge (parent-node) as a bridge;
+                        # we must record *that edge id*. It's the one that led from parent->node.
+                        bridges.add(peid)
                 continue
-            if sym == "W":
-                state["walls"].add((ax, ay))
-            # "_" is empty; "C" is crow center; we don't need to store empties.
 
-def ensure_game(body):
-    """Initialize or fetch the state for (challenger_id, game_id)."""
-    challenger_id = str(body.get("challenger_id"))
-    game_id = str(body.get("game_id"))
-    if not challenger_id or not game_id:
-        return None, "Missing challenger_id or game_id"
+            # Skip the edge we came from (by edge id), but allow parallel back-edges
+            if eid == parent_edge.get(node):
+                continue
 
-    gkey = (challenger_id, game_id)
-    if gkey not in games:
-        # First message of this test case must contain test_case
-        crows, grid_n, num_walls = parse_initial_test_case(body)
-        if not grid_n or not isinstance(crows, list) or len(crows) == 0:
-            return None, "Initial request must include test_case with crows and length_of_grid"
-
-        state = {
-            "grid_n": grid_n,
-            "num_walls": num_walls,
-            "crows": { str(c["id"]): {"x": int(c["x"]), "y": int(c["y"])} for c in crows },
-            "walls": set(),
-            "scanned_centers": set(),
-            "boustro_row": {},
-            "boustro_dir": {},
-        }
-        # Assign rows / directions for a simple multi-crow raster:
-        # crow 1 starts at its current row, moves east; crow 2 starts next row, moves west; crow 3 next, east; etc.
-        row_assign = 0
-        dir_sign = +1
-        for cid in sorted(state["crows"].keys()):
-            state["boustro_row"][cid] = state["crows"][cid]["y"]
-            state["boustro_dir"][cid] = dir_sign
-            dir_sign *= -1  # alternate E/W for coverage
-            row_assign += 1
-        games[gkey] = state
-    else:
-        state = games[gkey]
-    return state, None
-
-def pick_crow_to_act(state):
-    """
-    Simple policy:
-    1) If any crow is on a center we haven't scanned yet, scan with that crow.
-    2) Otherwise, move a crow along its boustrophedon (lawnmower) path.
-    """
-    # 1) Prefer scanning at unscanned center
-    for cid, pos in state["crows"].items():
-        if (pos["x"], pos["y"]) not in state["scanned_centers"]:
-            return cid, "scan", None
-
-    # 2) Move following raster (per-crow row with E/W sweeps)
-    # Try each crow and return a single move for the first feasible one
-    for cid, pos in state["crows"].items():
-        n = state["grid_n"]
-        x, y = pos["x"], pos["y"]
-        dir_sign = state["boustro_dir"][cid]
-
-        # If not on its assigned row, move vertically to that row first
-        target_row = state["boustro_row"][cid]
-        if y < target_row:
-            return cid, "move", "S"
-        if y > target_row:
-            return cid, "move", "N"
-
-        # On the target row: sweep left->right or right->left
-        if dir_sign == +1:
-            # Move East until x == n-1, then drop one row (S) and flip direction
-            if x < n - 1:
-                return cid, "move", "E"
+            if to not in visited:
+                visited.add(to)
+                parent_edge[to] = eid
+                time += 1
+                tin[to] = low[to] = time
+                stack.append((to, node, iter(adj[to])))
             else:
-                # at east edge: drop a row if possible; else, flip row assignment upward
-                if y < n - 1:
-                    state["boustro_row"][cid] = y + 1
-                    state["boustro_dir"][cid] = -1
-                    return cid, "move", "S"
-                else:
-                    # bottom-right corner; flip to go up (optional)
-                    state["boustro_row"][cid] = max(0, y - 1)
-                    state["boustro_dir"][cid] = -1
-                    return cid, "move", "N"
+                # Back/parallel edge: update low
+                low[node] = min(low[node], tin[to])
+
+    # Run DFS on all components
+    for node in list(adj.keys()):
+        if node not in visited:
+            dfs(node)
+
+    # Build result: any edge that is NOT a bridge is an extra channel.
+    # Self-loops are always extra. For parallel edges between the same two nodes,
+    # none of those parallel edges is a bridge, by definition above.
+    extra = []
+    for i in range(n_edges):
+        a, b = u[i], v[i]
+        if a == b:
+            extra.append({"spy1": a, "spy2": b})
+            continue
+        k = key[i]
+        if multiplicity[k] > 1:
+            extra.append({"spy1": a, "spy2": b})
         else:
-            # dir_sign == -1 => Move West until x == 0
-            if x > 0:
-                return cid, "move", "W"
-            else:
-                if y < n - 1:
-                    state["boustro_row"][cid] = y + 1
-                    state["boustro_dir"][cid] = +1
-                    return cid, "move", "S"
-                else:
-                    state["boustro_row"][cid] = max(0, y - 1)
-                    state["boustro_dir"][cid] = +1
-                    return cid, "move", "N"
+            if i not in bridges:
+                extra.append({"spy1": a, "spy2": b})
+    return extra
 
-    # Fallback (shouldn't happen): just act with the first crow
-    first_cid = next(iter(state["crows"]))
-    return first_cid, "scan", None
+@app.post("/investigate")
+def investigate():
+    # Be permissive with JSON parsing
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return jsonify({"error": "Body is not valid JSON"}), 400
 
-def direction_from_delta(dx, dy):
-    if dx == 0 and dy == -1: return "N"
-    if dx == 0 and dy ==  1: return "S"
-    if dx == 1 and dy ==  0: return "E"
-    if dx == -1 and dy == 0: return "W"
-    return None
+    # Accept either {"networks":[...]} or a raw list
+    if isinstance(data, dict):
+        networks = data.get("networks", [])
+        if not isinstance(networks, list):
+            return jsonify({"error": "Invalid 'networks' format; must be a list"}), 400
+    elif isinstance(data, list):
+        networks = data
+    else:
+        return jsonify({"error": "Invalid input; expected an object with 'networks' or a list"}), 400
 
-# ----------------------------
-# Core endpoint
-# ----------------------------
-@app.post("/fog-of-wall")
-def fog_of_wall():
-    body = request.get_json(force=True, silent=True)
-    if not isinstance(body, dict):
-        return jsonify({"error": "invalid body"}), 400
+    out = {"networks": []}
+    for net in networks:
+        if not isinstance(net, dict):
+            return jsonify({"error": "Each network must be an object"}), 400
+        nid = net.get("networkId")
+        edges = net.get("network")
+        if edges is None or not isinstance(edges, list):
+            return jsonify({"error": f"networkId={nid}: 'network' must be a list"}), 400
 
-    # Create or fetch game state
-    state, err = ensure_game(body)
-    if err:
-        return jsonify({"error": err}), 400
-
-    challenger_id = str(body.get("challenger_id"))
-    game_id = str(body.get("game_id"))
-    prev = body.get("previous_action")
-
-    # Ingest previous action result (if any)
-    if prev:
-        your_action = prev.get("your_action")
-        if your_action == "move" and "move_result" in prev:
-            apply_move_result(state, prev)
-        elif your_action == "scan" and "scan_result" in prev:
-            apply_scan_result(state, prev)
-
-    # If we have found all walls, submit
-    if len(state["walls"]) >= state["num_walls"] > 0:
-        submission = [key_xy(x, y) for (x, y) in sorted(state["walls"])]
-        return jsonify({
-            "challenger_id": challenger_id,
-            "game_id": game_id,
-            "action_type": "submit",
-            "submission": submission
+        extra = extra_channels_tarjan(edges)
+        out["networks"].append({
+            "networkId": nid,
+            "extraChannels": extra
         })
+    return jsonify(out), 200
 
-    # Policy: prefer scanning at any unscanned center, else move along raster
-    crow_id, action_type, maybe_dir = pick_crow_to_act(state)
-
-    if action_type == "scan":
-        return jsonify({
-            "challenger_id": challenger_id,
-            "game_id": game_id,
-            "crow_id": crow_id,
-            "action_type": "scan"
-        })
-
-    # action_type == "move"
-    return jsonify({
-        "challenger_id": challenger_id,
-        "game_id": game_id,
-        "crow_id": crow_id,
-        "action_type": "move",
-        "direction": maybe_dir
-    })
-
-# ----------------------------
-# Run
-# ----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
