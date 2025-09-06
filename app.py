@@ -5,7 +5,7 @@ from collections import defaultdict
 
 app = Flask(__name__)
 
-#@app.route('/trivia', methods=['GET'])
+@app.route('/trivia', methods=['GET'])
 # def home():
 #     return "Welcome to the Flask app!"
 
@@ -14,11 +14,12 @@ app = Flask(__name__)
 #     data = request.get_json()
 #     return jsonify({"received": data}), 201
 
-# def get_trivia():
-#     # Answers to the trivia questions
-#     result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
+def get_trivia():
+    # Answers to the trivia questions
+    #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
+    result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
     
-#     return jsonify(result)
+    return jsonify(result)
 
 # Task1
 # def calculate_distance(point1, point2):
@@ -79,81 +80,6 @@ app = Flask(__name__)
 #     except Exception as e:
 #        return jsonify({'error': str(e)}), 400
 
-class UnionFind:
-    def __init__(self):
-        self.parent = {}
-        self.rank = {}
-    
-    def find(self, x):
-        if x not in self.parent:
-            self.parent[x] = x
-            self.rank[x] = 0
-            return x
-        if self.parent[x] != x:
-            self.parent[x] = self.find(self.parent[x])
-        return self.parent[x]
-    
-    def union(self, x, y):
-        rootX = self.find(x)
-        rootY = self.find(y)
-        if rootX == rootY:
-            return False  # Already connected, so this edge is redundant
-        if self.rank[rootX] < self.rank[rootY]:
-            self.parent[rootX] = rootY
-        elif self.rank[rootX] > self.rank[rootY]:
-            self.parent[rootY] = rootX
-        else:
-            self.parent[rootY] = rootX
-            self.rank[rootX] += 1
-        return True
-
-@app.route('/investigate', methods=['POST'])
-def investigate():
-    try:
-        data = request.get_json()
-        # Accept either a dict with 'networks' or a list directly
-        if isinstance(data, list):
-            networks = data
-        elif isinstance(data, dict):
-            networks = data.get('networks', [])
-        else:
-            return jsonify({'error': 'Invalid input format'}), 400
-        
-        result_networks = []
-        
-        for network_data in networks:
-            network_id = network_data['networkId']
-            edges = network_data['network']
-        
-            # Normalize edges to avoid missing duplicates
-            normalized_edges = []
-            seen = set()
-            for edge in edges:
-                spy1, spy2 = sorted([edge['spy1'], edge['spy2']])
-                edge_tuple = (spy1, spy2)
-                if edge_tuple not in seen:
-                    normalized_edges.append({'spy1': spy1, 'spy2': spy2})
-                    seen.add(edge_tuple)
-        
-            uf = UnionFind()
-            extra_channels = []
-        
-            for edge in normalized_edges:
-                spy1 = edge['spy1']
-                spy2 = edge['spy2']
-                if not uf.union(spy1, spy2):
-                    extra_channels.append(edge)
-        
-            result_networks.append({
-                'networkId': network_id,
-                'extraChannels': extra_channels
-            })
-        
-        result = {'networks': result_networks}
-        return jsonify(result)
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
     
 if __name__ == '__main__':
     #app.run(host='0.0.0.0', port=5000)
