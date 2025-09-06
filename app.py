@@ -502,13 +502,12 @@ def handle_slsm():
 
 
 
+
 games = defaultdict(lambda: {
     "heading_deg": 0,
     "last_run": 0,
     "last_best": None,
 })
-
-# ---- Helpers ----
 
 def clamp_heading(h):
     h = ((h % 360) + 360) % 360
@@ -518,7 +517,7 @@ def valid_sensor(sensor):
     return isinstance(sensor, list) and len(sensor) == 5 and all(v in (0,1) for v in sensor)
 
 def walls(sensor):
-    # sensor: [-90, -45, 0, +45, +90], 1=blocked (<=12cm), 0=open
+    # [-90, -45, 0, +45, +90], 1=blocked
     return {
         "L90": sensor[0] == 1,
         "L45": sensor[1] == 1,
@@ -528,7 +527,6 @@ def walls(sensor):
     }
 
 def left_hand_choice(w):
-    # Priority left, fwd-left, fwd, fwd-right, right
     if not w["L90"]: return -90
     if not w["L45"]: return -45
     if not w["F"]:   return 0
@@ -537,79 +535,71 @@ def left_hand_choice(w):
     return None
 
 def plan_tokens(momentum, sensor):
-    # Safety-first planner: no moving rotations, no BB into a blocked front.
-    # Only translate when front is clear. Only rotate in-place at momentum 0.
+    # Extremely conservative planner:
+    # - No moving rotations, no corners
+    # - Never send BB or any forward translation when front is blocked
+    # - If front blocked and momentum > 0 -> cannot safely decelerate without moving; caller should end
+    # - If turning, only do in-place rotations at m=0
     if not valid_sensor(sensor):
-        return ["F1"]  # harmless default
+        return ["F1"], False  # safe default
 
     w = walls(sensor)
-
-    # If moving backward, brake toward 0 using V0 to avoid forward motion.
-    if momentum < 0:
-        # V0: reverse decel by 1 (toward 0), safe and no forward translation
-        return ["V0"]
-
     rel = left_hand_choice(w)
 
-    # If we need to turn (rel != 0), ensure momentum == 0 before rotation.
-    def need_turn():
-        return rel in (-90, -45, 45, 90)
+    # If moving backward, decelerate toward 0 without flipping direction
+    if momentum < 0:
+        return ["V0"], False
 
-    # If front is blocked, do not translate forward. Reduce momentum without half-step forward:
-    # Use F0 (forward decel by 1) until 0; then rotate in place to find opening.
+    # Front blocked
     if w["F"]:
         if momentum > 0:
-            return ["F0"]  # decel by 1 toward 0, no reverse or extra half-step beyond normal semantics
+            # We refuse to move; signal caller to end to avoid crash
+            return [], True
         # momentum == 0: rotate to find opening (prefer left)
         if rel in (-90, -45):
-            return ["L"]
+            return ["L"], False
         elif rel in (45, 90):
-            return ["R"]
+            return ["R"], False
         else:
-            # Completely boxed in: turn left
-            return ["L"]
+            return ["L"], False
 
-    # Front is clear:
-    if need_turn():
-        # We prefer to reorient left-hand without risking collision. Only rotate in place at 0.
+    # Front clear
+    # If we need a turn (left/right preference), rotate only at rest
+    if rel in (-90, -45, 45, 90):
         if momentum > 0:
-            return ["F0"]
-        # momentum == 0: rotate 45° toward desired side; repeat next cycle if 90° required
-        return ["L"] if rel in (-90, -45) else ["R"]
+            # Decelerate gently while front is clear; avoid BB to keep control
+            return ["F0"], False
+        # At rest: rotate a single 45° step toward target
+        return (["L"], False) if rel in (-90, -45) else (["R"], False)
 
-    # Go straight when front is open
+    # Straight
     if momentum < 2:
-        return ["F2"]
+        return ["F2"], False
     else:
-        return ["F1"]
+        return ["F1"], False
 
-def ensure_valid_response(tokens, end=False):
-    valid_tokens = {
-        "F0","F1","F2","V0","V1","V2","BB","L","R",
-        # We no longer emit moving rotations or corners
-    }
-    if end:
+def ensure_valid_response(tokens, end_flag):
+    valid_tokens = {"F0","F1","F2","V0","V1","V2","BB","L","R"}
+    if end_flag:
         return {"instructions": [], "end": True}
     if not isinstance(tokens, list):
         tokens = []
     out = [t for t in (str(x) for x in tokens) if t in valid_tokens]
     if not out:
-        out = ["F1"]
+        out = ["F1"]  # harmless default when we choose to continue
     return {"instructions": out, "end": False}
-
-# ---- Endpoint ----
 
 @app.route("/micro-mouse", methods=["POST"])
 def micro_mouse():
     try:
         data = request.get_json(force=True)
     except Exception:
-        return jsonify(ensure_valid_response([], end=True))
+        return jsonify({"instructions": [], "end": True})
 
     required = ["game_uuid", "sensor_data", "total_time_ms", "goal_reached",
                 "best_time_ms", "run_time_ms", "run", "momentum"]
     if not isinstance(data, dict) or any(k not in data for k in required):
-        return jsonify(ensure_valid_response([], end=True))
+        return jsonify({"instructions": [], "end": True})
 
     gid = data["game_uuid"]
     sensor = data["sensor_data"]
@@ -625,12 +615,9 @@ def micro_mouse():
         st["last_best"] = best_time_ms
 
     if goal_reached:
-        return jsonify(ensure_valid_response([], end=True))
+        return jsonify({"instructions": [], "end": True})
 
-    try:
-        tokens = plan_tokens(momentum, sensor)
-    except Exception:
-        return jsonify(ensure_valid_response([], end=True))
+    tokens, must_end = plan_tokens(momentum, sensor)
 
     # Update heading for in-place turns
     for t in tokens:
@@ -639,7 +626,13 @@ def micro_mouse():
         elif t == "R":
             st["heading_deg"] = clamp_heading(st["heading_deg"] + 45)
 
-    return jsonify(ensure_valid_response(tokens, end=False))
+    if must_end:
+        # Proactively end to avoid imminent collision
+        return jsonify({"instructions": [], "end": True})
+
+    resp = ensure_valid_response(tokens, end_flag=False)
+    return jsonify(resp)
+
 
 
 
