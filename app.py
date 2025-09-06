@@ -1,11 +1,14 @@
-# from flask import Flask, request, jsonify
-# import os
-# import math
-# from collections import defaultdict
+from flask import Flask, request, jsonify
+import os
+import math
+from collections import defaultdict
+import random
+from typing import List, Dict, Tuple
 
-# app = Flask(__name__)
 
-# @app.route('/trivia', methods=['GET'])
+app = Flask(__name__)
+
+@app.route('/trivia', methods=['GET'])
 # def home():
 #     return "Welcome to the Flask app!"
 
@@ -14,13 +17,14 @@
 #     data = request.get_json()
 #     return jsonify({"received": data}), 201
 
-# def get_trivia():
-#     # Answers to the trivia questions
-#     #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
-#     #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
-#     result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1, 2, 3, 1, 1, 2, 3, 5, 1]}
-    
-#     return jsonify(result)
+def get_trivia():
+    # Answers to the trivia questions
+    #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
+    #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
+    #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1, 2, 3, 1, 1, 2, 3, 5, 1]}
+    result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 2, 2, 1, 2, 1, 1, 2, 3, 1, 1, 2, 3, 5, 1]}
+
+    return jsonify(result)
 
 # Task1
 # def calculate_distance(point1, point2):
@@ -283,12 +287,6 @@
 # if __name__ == "__main__":
 #     uvicorn.run(app, host="0.0.0.0", port=8000)
 
-from flask import Flask, request, jsonify
-import random
-import os
-from typing import List, Dict, Tuple
-
-app = Flask(__name__)
 
 class SnakesLaddersSmokeMirrors:
     def __init__(self, board_size: int, players: int, jumps: List[str]):
