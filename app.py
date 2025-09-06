@@ -124,17 +124,26 @@ def investigate():
         for network_data in networks:
             network_id = network_data['networkId']
             edges = network_data['network']
-            
+        
+            # Normalize edges to avoid missing duplicates
+            normalized_edges = []
+            seen = set()
+            for edge in edges:
+                spy1, spy2 = sorted([edge['spy1'], edge['spy2']])
+                edge_tuple = (spy1, spy2)
+                if edge_tuple not in seen:
+                    normalized_edges.append({'spy1': spy1, 'spy2': spy2})
+                    seen.add(edge_tuple)
+        
             uf = UnionFind()
             extra_channels = []
-            
-            # Build spanning tree first
-            for edge in edges:
+        
+            for edge in normalized_edges:
                 spy1 = edge['spy1']
                 spy2 = edge['spy2']
                 if not uf.union(spy1, spy2):
                     extra_channels.append(edge)
-            
+        
             result_networks.append({
                 'networkId': network_id,
                 'extraChannels': extra_channels
