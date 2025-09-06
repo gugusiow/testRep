@@ -501,6 +501,7 @@ def handle_slsm():
 
 
 
+
 games = defaultdict(lambda: {
     "heading_deg": 0,
     "last_run": 0,
@@ -513,19 +514,11 @@ def clamp_heading(h):
     h = ((h % 360) + 360) % 360
     return (round(h / 45) * 45) % 360
 
-def is_valid_sensor(sensor):
-    if not isinstance(sensor, list) or len(sensor) != 5:
-        return False
-    try:
-        for v in sensor:
-            if v not in (0, 1):
-                return False
-    except Exception:
-        return False
-    return True
+def valid_sensor(sensor):
+    return isinstance(sensor, list) and len(sensor) == 5 and all(v in (0,1) for v in sensor)
 
-def walls_from_sensor(sensor):
-    # sensor: [-90, -45, 0, +45, +90], 1 = blocked (<=12 cm), 0 = clear
+def walls(sensor):
+    # sensor: [-90, -45, 0, +45, +90], 1=blocked (<=12cm), 0=open
     return {
         "L90": sensor[0] == 1,
         "L45": sensor[1] == 1,
@@ -535,6 +528,7 @@ def walls_from_sensor(sensor):
     }
 
 def left_hand_choice(w):
+    # Priority left, fwd-left, fwd, fwd-right, right
     if not w["L90"]: return -90
     if not w["L45"]: return -45
     if not w["F"]:   return 0
@@ -542,111 +536,66 @@ def left_hand_choice(w):
     if not w["R90"]: return 90
     return None
 
-def can_moving_rotation(momentum, w, turn):
-    if momentum != 1:
-        return False
-    if w["F"]:
-        return False
-    if turn == "L":
-        return not w["L45"]
-    else:
-        return not w["R45"]
+def plan_tokens(momentum, sensor):
+    # Safety-first planner: no moving rotations, no BB into a blocked front.
+    # Only translate when front is clear. Only rotate in-place at momentum 0.
+    if not valid_sensor(sensor):
+        return ["F1"]  # harmless default
 
-def plan_safe_tokens(momentum, sensor):
-    if not is_valid_sensor(sensor):
-        # Failsafe: just end to avoid simulator error cascade
-        return []
+    w = walls(sensor)
 
-    w = walls_from_sensor(sensor)
-    tokens = []
-
-    # If moving backward, brake toward 0 first
-    if isinstance(momentum, (int, float)) and momentum < 0:
-        return ["BB"]
+    # If moving backward, brake toward 0 using V0 to avoid forward motion.
+    if momentum < 0:
+        # V0: reverse decel by 1 (toward 0), safe and no forward translation
+        return ["V0"]
 
     rel = left_hand_choice(w)
 
-    # Dead-end: all blocked
-    if rel is None:
+    # If we need to turn (rel != 0), ensure momentum == 0 before rotation.
+    def need_turn():
+        return rel in (-90, -45, 45, 90)
+
+    # If front is blocked, do not translate forward. Reduce momentum without half-step forward:
+    # Use F0 (forward decel by 1) until 0; then rotate in place to find opening.
+    if w["F"]:
         if momentum > 0:
-            return ["BB"]
+            return ["F0"]  # decel by 1 toward 0, no reverse or extra half-step beyond normal semantics
+        # momentum == 0: rotate to find opening (prefer left)
+        if rel in (-90, -45):
+            return ["L"]
+        elif rel in (45, 90):
+            return ["R"]
         else:
-            return ["L", "L"]
+            # Completely boxed in: turn left
+            return ["L"]
 
-    # Straight preference
-    if rel == 0:
-        if w["F"]:
-            if momentum > 0:
-                return ["BB"]
-            else:
-                # rotate toward left if possible, else right
-                return ["L"] if (not w["L90"] or not w["L45"]) else ["R"]
-        # Front clear: accelerate then hold
-        return ["F2"] if momentum < 2 else ["F1"]
+    # Front is clear:
+    if need_turn():
+        # We prefer to reorient left-hand without risking collision. Only rotate in place at 0.
+        if momentum > 0:
+            return ["F0"]
+        # momentum == 0: rotate 45° toward desired side; repeat next cycle if 90° required
+        return ["L"] if rel in (-90, -45) else ["R"]
 
-    # Left needs
-    if rel in (-45, -90):
-        if rel == -90:
-            if momentum == 0:
-                return ["L", "L"]
-            elif can_moving_rotation(momentum, w, "L"):
-                return ["F1L"]
-            else:
-                return ["BB"]
-        else:  # -45
-            if can_moving_rotation(momentum, w, "L"):
-                return ["F1L"]
-            else:
-                return ["L"] if momentum == 0 else ["BB"]
-
-    # Right needs
-    if rel in (45, 90):
-        if rel == 90:
-            if momentum == 0:
-                return ["R", "R"]
-            elif can_moving_rotation(momentum, w, "R"):
-                return ["F1R"]
-            else:
-                return ["BB"]
-        else:  # 45
-            if can_moving_rotation(momentum, w, "R"):
-                return ["F1R"]
-            else:
-                return ["R"] if momentum == 0 else ["BB"]
-
-    # Fallbacks
-    if not w["F"]:
-        return ["F1"] if momentum >= 2 else ["F2"]
+    # Go straight when front is open
+    if momentum < 2:
+        return ["F2"]
     else:
-        return ["BB"] if momentum > 0 else ["L"]
+        return ["F1"]
 
 def ensure_valid_response(tokens, end=False):
-    # The simulator expects:
-    # - When end=false: instructions must be a non-empty list of valid tokens (strings).
-    # - When end=true: instructions can be empty.
     valid_tokens = {
         "F0","F1","F2","V0","V1","V2","BB","L","R",
-        "F0L","F0R","F1L","F1R","F2L","F2R","V0L","V0R","V1L","V1R","V2L","V2R","BBL","BBR",
-        # Corner tokens (we won’t generate in this controller, but whitelist not needed).
+        # We no longer emit moving rotations or corners
     }
     if end:
         return {"instructions": [], "end": True}
-
     if not isinstance(tokens, list):
         tokens = []
-
-    # Coerce to list of strings and filter unknowns
-    filtered = []
-    for t in tokens:
-        ts = str(t)
-        if ts in valid_tokens:
-            filtered.append(ts)
-
-    # Guarantee non-empty
-    if not filtered:
-        filtered = ["F1"]
-
-    return {"instructions": filtered, "end": False}
+    out = [t for t in (str(x) for x in tokens) if t in valid_tokens]
+    if not out:
+        out = ["F1"]
+    return {"instructions": out, "end": False}
 
 # ---- Endpoint ----
 
@@ -655,51 +604,42 @@ def micro_mouse():
     try:
         data = request.get_json(force=True)
     except Exception:
-        # Malformed JSON: end gracefully
         return jsonify(ensure_valid_response([], end=True))
 
-    # Required fields per spec
     required = ["game_uuid", "sensor_data", "total_time_ms", "goal_reached",
                 "best_time_ms", "run_time_ms", "run", "momentum"]
     if not isinstance(data, dict) or any(k not in data for k in required):
         return jsonify(ensure_valid_response([], end=True))
 
-    # Field extraction with safe defaults
-    game_uuid = data.get("game_uuid")
-    sensor = data.get("sensor_data")
-    momentum = data.get("momentum", 0)
-    run = data.get("run", 0)
+    gid = data["game_uuid"]
+    sensor = data["sensor_data"]
+    momentum = int(data.get("momentum", 0))
+    run = int(data.get("run", 0))
     goal_reached = bool(data.get("goal_reached", False))
     best_time_ms = data.get("best_time_ms", None)
 
-    # Update simple state
-    st = games[game_uuid]
+    st = games[gid]
     if st["last_run"] != run:
         st["last_run"] = run
     if best_time_ms is not None:
         st["last_best"] = best_time_ms
 
-    # If goal reached, end to record score
     if goal_reached:
         return jsonify(ensure_valid_response([], end=True))
 
-    # Plan tokens
     try:
-        tokens = plan_safe_tokens(int(momentum), sensor)
+        tokens = plan_tokens(momentum, sensor)
     except Exception:
-        # Any planner error -> end with safety
         return jsonify(ensure_valid_response([], end=True))
 
-    # Update heading only for in-place turns
+    # Update heading for in-place turns
     for t in tokens:
         if t == "L":
             st["heading_deg"] = clamp_heading(st["heading_deg"] - 45)
         elif t == "R":
             st["heading_deg"] = clamp_heading(st["heading_deg"] + 45)
 
-    # Return guaranteed-valid response
-    resp = ensure_valid_response(tokens, end=False)
-    return jsonify(resp)
+    return jsonify(ensure_valid_response(tokens, end=False))
 
 
 
