@@ -18,15 +18,6 @@ app = Flask(__name__)
     
 #     return jsonify(result)
 
-def calculate_distance(point1, point2):
-    x1, y1 = point1
-    x2, y2 = point2
-    return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-
-def calculate_latency_points(distance):
-    points = max(0, 30 - distance)
-    return round(points)
-
 @app.route('/ticketing-agent', methods=['POST'])
 def ticketing_agent():
     try:
@@ -59,6 +50,15 @@ def ticketing_agent():
                 
                 if credit_card in priority and priority[credit_card] == concert_name:
                     points += 50
+
+                def calculate_distance(point1, point2):
+                    x1, y1 = point1
+                    x2, y2 = point2
+                    return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+
+                def calculate_latency_points(distance):
+                    points = max(0, 30 - distance)
+                    return round(points)
                 
                 distance = calculate_distance(customer_location, booking_center)
                 latency_points = calculate_latency_points(distance)
@@ -74,7 +74,7 @@ def ticketing_agent():
         return jsonify(recommendations)
     
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+       return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
