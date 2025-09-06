@@ -17,6 +17,7 @@ app = Flask(__name__)
 def get_trivia():
     # Answers to the trivia questions
     #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
+    #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
     result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
     
     return jsonify(result)
