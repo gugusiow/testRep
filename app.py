@@ -1,100 +1,86 @@
 # app.py
 from flask import Flask, request, jsonify
+import os
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
 
-def find_extra_channels(edges):
-    """
-    edges: list of {"spy1": str, "spy2": str} for one undirected network
-    returns: list of edges (same shape) that are NOT bridges (safe to cut)
-    """
-    # Build adjacency and keep original indices for each (u,v)
-    adj = {}
-    undirected_edges = []  # list of (u, v) with u != v, normalized by original order
-    for i, e in enumerate(edges):
-        u, v = e["spy1"], e["spy2"]
-        if u == v:
-            # self-loops are always non-bridges (they form a cycle of length 1)
-            undirected_edges.append((u, v))
-            continue
-        adj.setdefault(u, []).append((v, i))
-        adj.setdefault(v, []).append((u, i))
-        undirected_edges.append((u, v))
+class UnionFind:
+    def __init__(self):
+        self.parent = {}
+    
+    def find(self, x):
+        if x not in self.parent:
+            self.parent[x] = x
+        if self.parent[x] != x:
+            self.parent[x] = self.find(self.parent[x])
+        return self.parent[x]
+    
+    def union(self, x, y):
+        root_x = self.find(x)
+        root_y = self.find(y)
+        if root_x == root_y:
+            return False  # Already connected, this edge creates a cycle
+        self.parent[root_x] = root_y
+        return True
 
-    # Handle multi-edges: if multiple identical undirected edges exist between u and v,
-    # then none of them is a bridge. We'll detect multiplicity over frozenset({u,v}).
-    multiplicity = {}
-    for (u, v) in undirected_edges:
-        key = (u, v) if u == v else frozenset((u, v))
-        multiplicity[key] = multiplicity.get(key, 0) + 1
-
-    time = 0
-    tin = {}
-    low = {}
-    visited = set()
-    parent = {}
-    bridge_edge_ids = set()  # set of original edge indices that are bridges
-
-    def dfs(u):
-        nonlocal time
-        visited.add(u)
-        time += 1
-        tin[u] = low[u] = time
-        for (v, eid) in adj.get(u, []):
-            if v == parent.get(u):
-                continue
-            if v in visited:
-                # back edge
-                low[u] = min(low[u], tin[v])
-            else:
-                parent[v] = u
-                dfs(v)
-                low[u] = min(low[u], low[v])
-                # Tree edge u-v is a bridge iff low[v] > tin[u] AND not a multi-edge
-                # (Parallel edges mean the pair is never a bridge.)
-                key = frozenset((u, v))
-                if low[v] > tin[u] and multiplicity.get(key, 0) == 1:
-                    bridge_edge_ids.add(eid)
-
-    # Run DFS from all components
-    for node in adj.keys():
-        if node not in visited:
-            parent[node] = None
-            dfs(node)
-
-    # Everything not in bridge_edge_ids is a non-bridge (extra channel)
-    extra = []
-    for i, e in enumerate(edges):
-        u, v = e["spy1"], e["spy2"]
-        if u == v:
-            # self-loop -> always extra
-            extra.append({"spy1": u, "spy2": v})
-        else:
-            if i not in bridge_edge_ids:
-                extra.append({"spy1": u, "spy2": v})
-    return extra
-
-@app.post("/investigate")
+@app.route('/investigate', methods=['POST'])
 def investigate():
-    data = request.get_json(silent=True)
-    if not data or "networks" not in data or not isinstance(data["networks"], list):
-        return jsonify({"error": "Invalid input; expected {'networks': [...]}"}), 400
-
-    result = {"networks": []}
-    for net in data["networks"]:
-        network_id = net.get("networkId")
-        edges = net.get("network", [])
-        if not isinstance(edges, list):
-            return jsonify({"error": f"Invalid 'network' for networkId={network_id}"}), 400
-        extra = find_extra_channels(edges)
-        result["networks"].append({
-            "networkId": network_id,
-            "extraChannels": extra
-        })
-
-    return jsonify(result), 200
+    try:
+        data = request.get_json()
+        # Accept either a dict with 'networks' or a list directly
+        if isinstance(data, list):
+            networks = data
+        elif isinstance(data, dict):
+            networks = data.get('networks', [])
+        else:
+            return jsonify({'error': 'Invalid input format'}), 400
+        
+        result_networks = []
+        
+        for network_data in networks:
+            network_id = network_data['networkId']
+            edges = network_data['network']
+        
+            # Track seen edges and duplicates
+            seen = set()
+            normalized_edges = []
+            duplicates = []
+        
+            for edge in edges:
+                spy1, spy2 = sorted([edge['spy1'], edge['spy2']])
+                edge_tuple = (spy1, spy2)
+                if edge_tuple not in seen:
+                    normalized_edges.append({'spy1': spy1, 'spy2': spy2})
+                    seen.add(edge_tuple)
+                else:
+                    # This is a duplicate edge
+                    duplicates.append({'spy1': spy1, 'spy2': spy2})
+        
+            uf = UnionFind()
+            extra_channels = []
+        
+            for edge in normalized_edges:
+                spy1 = edge['spy1']
+                spy2 = edge['spy2']
+                if not uf.union(spy1, spy2):
+                    extra_channels.append(edge)
+        
+            # Add all duplicates to extra_channels
+            extra_channels.extend(duplicates)
+        
+            result_networks.append({
+                'networkId': network_id,
+                'extraChannels': extra_channels
+            })
+        
+        result = {'networks': result_networks}
+        return jsonify(result)
+    
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
-    # Default to port 8000 for local testing
-    app.run(host="0.0.0.0", port=8000)
+    #app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 5000)) # Get the PORT env var, default to 5000 for local run
+    app.run(host='0.0.0.0', port=port) # You MUST set host to '0.0.0.0'
