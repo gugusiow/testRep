@@ -5,7 +5,7 @@ from collections import defaultdict
 
 app = Flask(__name__)
 
-@app.route('/trivia', methods=['GET'])
+# @app.route('/trivia', methods=['GET'])
 # def home():
 #     return "Welcome to the Flask app!"
 
@@ -81,49 +81,138 @@ app = Flask(__name__)
 #     except Exception as e:
 #        return jsonify({'error': str(e)}), 400
 
+# @app.route('/sailing-club/submission', methods=['POST'])
+# def sail_club():
+#     try:
+#         data = request.get_json()
+        
+#         for test_case in data['testCases']:
+#             case_id = test_case.get('id')
+#             input = test_case.get('input', [])
+
+#             merged_result = []
+
+#             intervals = sorted(input, key=lambda x: x[0])
+#             merged = []
+#             for interval in intervals:
+#                 if not merged or merged[-1][1] < interval[0]:
+#                     merged.append(interval[:])
+#                 else:
+#                     merged[-1][1] = max(merged[-1][1], interval[1])
+
+#             # Sweep line to count overlaps
+#             events = []
+#             for start, end in input:
+#                 events.append((start, 1))  # boat arrives
+#                 events.append((end, -1))   # boat leaves
+#             events.sort()
+
+#             max_boats = 0
+#             current_boats = 0
+#             for _, change in events:
+#                 current_boats += change
+#                 max_boats = max(max_boats, current_boats)
+            
+#             merged_result.append({
+#                 'id':case_id,
+#                 'sortedMergedSlots': merged,
+#                 'minBoatsNeeded': max_boats
+#             })
+
+#         result = {'solutions': merged_result}
+#         return jsonify(result)
+
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 400
+
+from typing import List, Tuple
+import json
+
+def merge_intervals(intervals: List[List[int]]) -> List[List[int]]:
+    """Merge overlapping intervals and sort them"""
+    if not intervals:
+        return []
+    
+    # Sort intervals by start time
+    intervals.sort(key=lambda x: x[0])
+    
+    merged = []
+    current_start, current_end = intervals[0]
+    
+    for interval in intervals[1:]:
+        start, end = interval
+        
+        # If current interval overlaps with next interval, merge them
+        if start <= current_end:
+            current_end = max(current_end, end)
+        else:
+            # No overlap, add current interval to result
+            merged.append([current_start, current_end])
+            current_start, current_end = start, end
+    
+    # Add the last interval
+    merged.append([current_start, current_end])
+    
+    return merged
+
+def min_boats_needed(intervals: List[List[int]]) -> int:
+    """Find minimum number of boats needed using sweep-line algorithm"""
+    if not intervals:
+        return 0
+    
+    # Create events: (time, +1 for start, -1 for end)
+    events = []
+    for start, end in intervals:
+        events.append((start, 1))
+        events.append((end, -1))
+    
+    # Sort events by time, and for same time, process ends first
+    events.sort(key=lambda x: (x[0], x[1]))
+    
+    max_boats = 0
+    current_boats = 0
+    
+    for time, event_type in events:
+        current_boats += event_type
+        max_boats = max(max_boats, current_boats)
+    
+    return max_boats
+
+def solve_sailing_club(test_cases):
+    solutions = []
+    
+    for test_case in test_cases:
+        intervals = test_case["input"]
+        
+        # Part 1: Merge intervals
+        merged_slots = merge_intervals(intervals)
+        
+        # Part 2: Find minimum boats needed
+        min_boats = min_boats_needed(intervals)
+        
+        solutions.append({
+            "id": test_case["id"],
+            "sortedMergedSlots": merged_slots,
+            "minBoatsNeeded": min_boats
+        })
+    
+    return {"solutions": solutions}
+
+# Flask endpoint would look like this:
+
 @app.route('/sailing-club/submission', methods=['POST'])
-def sail_club():
+def sailing_club_endpoint():
     try:
         data = request.get_json()
-        
-        for test_case in data['testCases']:
-            case_id = test_case.get('id')
-            input = test_case.get('input', [])
-
-            merged_result = []
-
-            intervals = sorted(input, key=lambda x: x[0])
-            merged = []
-            for interval in intervals:
-                if not merged or merged[-1][1] < interval[0]:
-                    merged.append(interval[:])
-                else:
-                    merged[-1][1] = max(merged[-1][1], interval[1])
-
-            # Sweep line to count overlaps
-            events = []
-            for start, end in input:
-                events.append((start, 1))  # boat arrives
-                events.append((end, -1))   # boat leaves
-            events.sort()
-
-            max_boats = 0
-            current_boats = 0
-            for _, change in events:
-                current_boats += change
-                max_boats = max(max_boats, current_boats)
-            
-            merged_result.append({
-                'id':case_id,
-                'sortedMergedSlots': merged,
-                'minBoatsNeeded': max_boats
-            })
-
-        result = {'solutions': merged_result}
+        test_cases = data.get('testCases', [])
+        result = solve_sailing_club(test_cases)
         return jsonify(result)
-
     except Exception as e:
-        return jsonify({"error": str(e)}), 400
+        return jsonify({'error': str(e)}), 400
+
+# if __name__ == '__main__':
+#     app.run(debug=True)
+
 
     
 if __name__ == '__main__':
