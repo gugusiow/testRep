@@ -9,77 +9,61 @@ MAX_HOUR = 4096  # inclusive bound per spec
 
 def solve_by_prefix(slots):
     """
-    Prefix-sum on a fixed time grid [0..4096].
-    - Build delta so that for each [s,e): delta[s]+=1, delta[e]-=1
-    - Scan t=0..4096, maintain cur occupancy.
-      * Start a busy block when cur goes 0 -> >0 at t.
-      * End a busy block when cur goes >0 -> 0 at t (end time is t).
-    - minBoatsNeeded = max cur during the scan.
+    Greedy algorithm for interval merging and boat counting.
+    1. Filter and validate input slots
+    2. Merge overlapping intervals using greedy approach
+    3. Count minimum boats needed using event-based approach
     Returns (merged_intervals_sorted_by_end_then_start, min_boats).
     """
-    # Difference array (one extra slot is fine)
-    delta = [0] * (MAX_HOUR + 1)
-
-    # Clamp inputs into [0, MAX_HOUR] and accumulate
+    # Filter valid slots
+    valid_slots = []
     for s, e in slots:
-        # accept anything with s < e; clamp to bounds to stay index-safe
+        # Only accept valid integer intervals with s < e
         if not isinstance(s, int) or not isinstance(e, int):
             continue
         if s >= e:
             continue
-        
-        # Clamp start to [0, MAX_HOUR]
-        s_orig = s
-        s = max(0, min(MAX_HOUR, s))
-        
-        # For end, we need to handle values > MAX_HOUR differently
-        # If end > MAX_HOUR, clamp to MAX_HOUR + 1 so the interval [s, MAX_HOUR] is valid
-        e_orig = e
-        if e > MAX_HOUR:
-            e = MAX_HOUR + 1
-        else:
-            e = max(0, e)
-        
-        if s >= e:
+        # Clamp to valid range [0, MAX_HOUR] but preserve intervals that extend beyond
+        s_clamped = max(0, min(MAX_HOUR, s))
+        e_clamped = max(0, min(MAX_HOUR + 1, e))  # Allow end to be MAX_HOUR + 1
+        if s_clamped >= e_clamped:
             continue
-            
-        delta[s] += 1
-        if e <= MAX_HOUR:
-            delta[e] -= 1
-
-    merged = []
-    cur = 0
-    peak = 0
-    in_busy = False
-    start_t = None
-
-    # Scan all integer hours 0..4096
-    for t in range(0, MAX_HOUR + 1):
-        cur += delta[t]
-        if cur > peak:
-            peak = cur
-
-        if cur > 0 and not in_busy:
-            # entering busy
-            in_busy = True
-            start_t = t
-        elif cur == 0 and in_busy:
-            # leaving busy; block covers [start_t, t)
-            merged.append([start_t, t])
-            in_busy = False
-            start_t = None
+        valid_slots.append([s_clamped, e_clamped])
     
-    # If we're still in a busy period at the end, close it at MAX_HOUR + 1
-    if in_busy:
-        merged.append([start_t, MAX_HOUR + 1])
-        in_busy = False
-
-    # merged blocks are discovered in chronological order:
-    # starts and ends are strictly increasing → end-time ascending already.
-    # (If you still want to be extra explicit:)
-    merged.sort(key=lambda ab: (ab[1], ab[0]))
-
-    return merged, peak
+    if not valid_slots:
+        return [], 0
+    
+    # Part 1: Merge overlapping intervals using greedy approach
+    # Sort by start time, then by end time
+    valid_slots.sort()
+    
+    merged = []
+    for start, end in valid_slots:
+        if not merged or merged[-1][1] < start:
+            # No overlap, add new interval
+            merged.append([start, end])
+        else:
+            # Overlap, extend the last interval
+            merged[-1][1] = max(merged[-1][1], end)
+    
+    # Part 2: Calculate minimum boats needed using event-based approach
+    events = []
+    for start, end in valid_slots:
+        events.append((start, 1))   # boat needed at start
+        events.append((end, -1))    # boat returned at end
+    
+    events.sort()  # Sort by time, then by type (returns before bookings at same time)
+    
+    max_boats = 0
+    current_boats = 0
+    for time, change in events:
+        current_boats += change
+        max_boats = max(max_boats, current_boats)
+    
+    # Sort merged intervals by end time, then by start time as required
+    merged.sort(key=lambda interval: (interval[1], interval[0]))
+    
+    return merged, max_boats
 
 @app.post("/sailing-club/submission")
 def submission():
