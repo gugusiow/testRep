@@ -1,9 +1,10 @@
 # app.py
 from math import sqrt
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify
 
 app = Flask(__name__)
-app.url_map.strict_slashes = False  # accept /path and /path/
+# Accept both "/ticketing-agent" and "/ticketing-agent/" without redirect issues
+app.url_map.strict_slashes = False
 
 # ---- tiny logger (helps catch wrong paths/methods) ----
 @app.before_request
