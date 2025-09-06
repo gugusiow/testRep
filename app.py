@@ -471,7 +471,7 @@ class SnakesLaddersSmokeMirrors:
         """Generate random rolls"""
         return [random.randint(1, 6) for _ in range(self.players * 20)]
 
-@app.route('/slsm', methods=['POST'])
+@app.route('/slpu', methods=['POST'])   # was slsm...
 def handle_slsm():
     try:
         data = request.get_json()
