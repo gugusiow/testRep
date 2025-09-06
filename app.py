@@ -5,7 +5,7 @@ from collections import defaultdict
 
 app = Flask(__name__)
 
-#@app.route('/trivia', methods=['GET'])
+@app.route('/trivia', methods=['GET'])
 # def home():
 #     return "Welcome to the Flask app!"
 
@@ -14,13 +14,13 @@ app = Flask(__name__)
 #     data = request.get_json()
 #     return jsonify({"received": data}), 201
 
-# def get_trivia():
-#     # Answers to the trivia questions
-#     #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
-#     #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
-#     result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1, 2]}
+def get_trivia():
+    # Answers to the trivia questions
+    #result = {"answers": [2, 1, 2, 2, 3, 4, 3, 5, 4]}
+    #result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1]}
+    result = {"answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 3, 3, 2, 1, 2, 1, 1, 2, 3, 1, 1, 2, 3, 5, 1]}
     
-#     return jsonify(result)
+    return jsonify(result)
 
 # Task1
 # def calculate_distance(point1, point2):
@@ -81,49 +81,49 @@ app = Flask(__name__)
 #     except Exception as e:
 #        return jsonify({'error': str(e)}), 400
 
-@app.route('/sailing-club', methods=['POST'])
-def sail_club():
-    try:
-        data = request.get_json()
+# @app.route('/sailing-club', methods=['POST'])
+# def sail_club():
+#     try:
+#         data = request.get_json()
         
-        for test_case in data['testCases']:
-            case_id = test_case.get('id')
-            input = test_case.get('input', [])
+#         for test_case in data['testCases']:
+#             case_id = test_case.get('id')
+#             input = test_case.get('input', [])
 
-            merged_result = []
+#             merged_result = []
 
-            intervals = sorted(input, key=lambda x: x[0])
-            merged = []
-            for interval in intervals:
-                if not merged or merged[-1][1] < interval[0]:
-                    merged.append(interval[:])
-                else:
-                    merged[-1][1] = max(merged[-1][1], interval[1])
+#             intervals = sorted(input, key=lambda x: x[0])
+#             merged = []
+#             for interval in intervals:
+#                 if not merged or merged[-1][1] < interval[0]:
+#                     merged.append(interval[:])
+#                 else:
+#                     merged[-1][1] = max(merged[-1][1], interval[1])
 
-            # Sweep line to count overlaps
-            events = []
-            for start, end in input:
-                events.append((start, 1))  # boat arrives
-                events.append((end, -1))   # boat leaves
-            events.sort()
+#             # Sweep line to count overlaps
+#             events = []
+#             for start, end in input:
+#                 events.append((start, 1))  # boat arrives
+#                 events.append((end, -1))   # boat leaves
+#             events.sort()
 
-            max_boats = 0
-            current_boats = 0
-            for _, change in events:
-                current_boats += change
-                max_boats = max(max_boats, current_boats)
+#             max_boats = 0
+#             current_boats = 0
+#             for _, change in events:
+#                 current_boats += change
+#                 max_boats = max(max_boats, current_boats)
             
-            merged_result.append({
-                'id':case_id,
-                'sortedMergedSlots': merged,
-                'minBoatsNeeded': max_boats
-            })
+#             merged_result.append({
+#                 'id':case_id,
+#                 'sortedMergedSlots': merged,
+#                 'minBoatsNeeded': max_boats
+#             })
 
-            result = {'solutions': merged_result}
-            return jsonify(result)
+#             result = {'solutions': merged_result}
+#             return jsonify(result)
 
-    except Exception as e:
-        return jsonify({"error": str(e)}), 400
+#     except Exception as e:
+#         return jsonify({"error": str(e)}), 400
 
     
 if __name__ == '__main__':
