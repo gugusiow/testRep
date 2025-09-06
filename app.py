@@ -136,103 +136,150 @@ def normalize_slots(slots: Any) -> Tuple[List[List[int]], Optional[str]]:
     """
     Validate and normalize the 'input' field to a list of [start, end] integer pairs.
     Returns (normalized_slots, error_message_if_any).
-    On validation issues, it tries to coerce safely; if impossible, returns empty list with an error.
     """
     if slots is None:
         return [], None
     if not isinstance(slots, list):
         return [], "input must be a list"
+    
     norm: List[List[int]] = []
     for idx, it in enumerate(slots):
         if not (isinstance(it, (list, tuple)) and len(it) == 2):
             return [], f"input[{idx}] must be a pair [start, end]"
+        
         s, e = it[0], it[1]
         if not (isinstance(s, int) and isinstance(e, int)):
             return [], f"input[{idx}] values must be integers"
-        # Basic constraints from problem; if invalid, skip or clamp?
-        # We'll skip invalid intervals but still return a solution entry.
-        if not (0 <= s <= 4096 and 0 <= e <= 4096 and s < e):
+        
+        # Handle cases where start > end (like [11, 8] in the sample)
+        if s > e:
+            # This represents a booking that wraps around midnight
+            # We'll split it into two intervals: [s, 4096] and [0, e]
+            # But for now, we'll keep it as is and handle during merging
+            pass
+        
+        # Validate constraints: 0 <= hours <= 4096
+        if not (0 <= s <= 4096 and 0 <= e <= 4096):
             # Skip invalid interval but keep processing others
             continue
+        
         norm.append([s, e])
-    # Sort here to ensure determinism even if empty or partially invalid
-    norm.sort(key=lambda x: (x[0], x[1]))
+    
     return norm, None
 
 def merge_slots(slots: List[List[int]]) -> List[List[int]]:
     if not slots:
         return []
-    merged: List[List[int]] = []
-    cur_start, cur_end = slots[0]
-    for s, e in slots[1:]:
-        # Merge overlapping or touching intervals
-        if s <= cur_end:
-            if e > cur_end:
-                cur_end = e
+    
+    # First, handle wrap-around intervals by splitting them
+    normalized_slots = []
+    for start, end in slots:
+        if start <= end:
+            normalized_slots.append([start, end])
         else:
-            merged.append([cur_start, cur_end])
-            cur_start, cur_end = s, e
-    merged.append([cur_start, cur_end])
+            # Split wrap-around interval: [start, 4096] and [0, end]
+            normalized_slots.append([start, 4096])
+            normalized_slots.append([0, end])
+    
+    # Sort by start time
+    normalized_slots.sort(key=lambda x: x[0])
+    
+    merged: List[List[int]] = []
+    if not normalized_slots:
+        return merged
+    
+    current_start, current_end = normalized_slots[0]
+    
+    for i in range(1, len(normalized_slots)):
+        start, end = normalized_slots[i]
+        
+        if start <= current_end + 1:  # +1 because intervals are inclusive
+            current_end = max(current_end, end)
+        else:
+            merged.append([current_start, current_end])
+            current_start, current_end = start, end
+    
+    merged.append([current_start, current_end])
+    
+    # Sort the final result
+    merged.sort(key=lambda x: x[0])
     return merged
 
 def min_boats_needed(slots: List[List[int]]) -> int:
+    """
+    Calculate minimum boats needed by finding maximum overlapping intervals.
+    Uses a sweep-line algorithm.
+    """
     if not slots:
         return 0
-    starts = sorted(s for s, _ in slots)
-    ends = sorted(e for _, e in slots)
-    i = j = 0
-    boats = max_boats = 0
-    n = len(slots)
-    # Use strict inequality so [a,b] and [b,c] are not overlapping (end is exclusive)
-    while i < n and j < n:
-        if starts[i] < ends[j]:
-            boats += 1
-            if boats > max_boats:
-                max_boats = boats
-            i += 1
+    
+    # Handle wrap-around intervals by splitting them
+    events = []
+    for start, end in slots:
+        if start <= end:
+            events.append((start, 1))    # start event
+            events.append((end + 1, -1)) # end event (exclusive)
         else:
-            boats -= 1
-            j += 1
+            # Split wrap-around interval
+            events.append((start, 1))
+            events.append((4097, -1))    # end of first part
+            events.append((0, 1))        # start of second part
+            events.append((end + 1, -1)) # end of second part
+    
+    # Sort events: by time, and for same time, process ends first
+    events.sort(key=lambda x: (x[0], x[1]))
+    
+    current_boats = 0
+    max_boats = 0
+    
+    for time, event_type in events:
+        current_boats += event_type
+        max_boats = max(max_boats, current_boats)
+    
     return max_boats
 
 def solve_one(tc: Dict[str, Any]) -> Dict[str, Any]:
-    tc_id = tc.get("id")
-    # Always include id; if missing, put a safe fallback string so response is valid JSON
-    if tc_id is None:
-        tc_id = ""
-
-    slots_raw = tc.get("input")
-    slots, _err = normalize_slots(slots_raw)
+    tc_id = tc.get("id", "")
+    slots_raw = tc.get("input", [])
+    
+    # Normalize and validate slots
+    slots, error = normalize_slots(slots_raw)
+    
+    # Always include both fields
     merged = merge_slots(slots)
     boats = min_boats_needed(slots)
-
-    # Always include sortedMergedSlots; include minBoatsNeeded to aim for full score
+    
     return {
         "id": tc_id,
         "sortedMergedSlots": merged,
-        "minBoatsNeeded": boats,
+        "minBoatsNeeded": boats
     }
 
 @app.post("/sailing-club/submission")
 async def submission(request: Request):
-    # Always respond JSON to avoid HTML errors at clients
     try:
         body = await request.json()
     except Exception:
         return JSONResponse(status_code=400, content={"error": "Invalid JSON in request body"})
-    test_cases = body.get("testCases")
-    if test_cases is None:
-        # Still return the required envelope
-        return JSONResponse(content={"solutions": []})
+    
+    test_cases = body.get("testCases", [])
     if not isinstance(test_cases, list):
-        # Coerce to empty if malformed
         test_cases = []
-
-    solutions = [solve_one(tc if isinstance(tc, dict) else {}) for tc in test_cases]
+    
+    solutions = []
+    for tc in test_cases:
+        if isinstance(tc, dict):
+            solutions.append(solve_one(tc))
+        else:
+            solutions.append({
+                "id": "",
+                "sortedMergedSlots": [],
+                "minBoatsNeeded": 0
+            })
+    
     return JSONResponse(content={"solutions": solutions})
 
 if __name__ == "__main__":
-    # Run locally: python app.py
     uvicorn.run(app, host="0.0.0.0", port=8000)
 
     
