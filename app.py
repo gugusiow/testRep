@@ -203,47 +203,51 @@ def get_gambit():
 #         results.append({"path": path, "gain": gain})
 #     return jsonify(results)
 
+from math import log
+EPS = 1e-9  # numerical tolerance; adjust if needed
+
 def find_profitable_cycles(num_nodes, edges):
-    # Build adjacency for reconstruction of product later
+    """
+    Returns all valid profitable directed cycles found as (cycle_nodes, product),
+    where cycle_nodes is like [a,b,c,a].
+    Ensures each hop exists in 'edges' in the stated direction and product > 1+EPS.
+    """
+    # adjacency map to verify and compute products
     adj_rate = {}
     for u, v, r in edges:
-        adj_rate[(u, v)] = r
+        if r > 0:
+            adj_rate[(u, v)] = r
 
-    all_cycles = []          # list of (cycle_nodes, product)
-    seen_cycles_canonical = set()
+    # weights for Bellman-Ford
+    weighted_edges = []
+    for u, v, r in edges:
+        if r > 0:
+            weighted_edges.append((u, v, -log(r)))
 
-    def canonicalize_cycle(cycle):
-        # cycle is like [a,b,c,a]; we canonicalize by removing last, rotating so min index first, and direction normalization.
-        core = cycle[:-1]
+    all_cycles = []
+    seen_canon = set()
+
+    def canonicalize_cycle(cyc):
+        # cyc: [n0, n1, ..., n0]
+        core = cyc[:-1]
         n = len(core)
-        min_idx = min(range(n), key=lambda i: core[i])
-        rotated = core[min_idx:] + core[:min_idx]
-        # Also consider reversed
-        core_rev = list(reversed(core))
-        min_idx_rev = min(range(n), key=lambda i: core_rev[i])
-        rotated_rev = core_rev[min_idx_rev:] + core_rev[:min_idx_rev]
-        canon = tuple(rotated) if rotated < rotated_rev else tuple(rotated_rev)
-        return canon
+        if n == 0:
+            return None
+        # minimal rotation
+        min_pos = min(range(n), key=lambda i: core[i])
+        rot = core[min_pos:] + core[:min_pos]
+        # reversed minimal rotation
+        rev = list(reversed(core))
+        min_pos_r = min(range(n), key=lambda i: rev[i])
+        rot_r = rev[min_pos_r:] + rev[:min_pos_r]
+        return tuple(rot) if rot < rot_r else tuple(rot_r)
 
+    # Run Bellman-Ford from every node to find negative cycles in any component
     for src in range(num_nodes):
-        INF = float('inf')
         dist = [0.0] * num_nodes
         pred = [-1] * num_nodes
 
-        # Initialize
-        for i in range(num_nodes):
-            dist[i] = 0.0
-            pred[i] = -1
-
-        # Build weights
-        weighted_edges = []
-        for u, v, r in edges:
-            if r <= 0:
-                continue
-            w = -log(r)
-            weighted_edges.append((u, v, w))
-
-        # Relax edges N-1 times
+        # Relax N-1 times
         for _ in range(num_nodes - 1):
             updated = False
             for u, v, w in weighted_edges:
@@ -254,8 +258,7 @@ def find_profitable_cycles(num_nodes, edges):
             if not updated:
                 break
 
-        # Check for negative cycles and reconstruct
-        in_cycle = [-1] * num_nodes
+        # One more pass to detect a negative cycle
         cycle_entry = -1
         for u, v, w in weighted_edges:
             if dist[u] + w < dist[v] - 1e-15:
@@ -266,54 +269,71 @@ def find_profitable_cycles(num_nodes, edges):
         if cycle_entry == -1:
             continue
 
-        # Move cycle_entry forward N times to ensure it is inside the cycle
+        # Ensure cycle_entry is inside the cycle
         x = cycle_entry
         for _ in range(num_nodes):
             x = pred[x]
-
-        # Reconstruct cycle
-        cycle_nodes = []
-        cur = x
-        while True:
-            cycle_nodes.append(cur)
-            cur = pred[cur]
-            if cur == x or cur == -1:
+            if x == -1:
                 break
-
-        if cur == -1 or len(cycle_nodes) < 2:
+        if x == -1:
             continue
 
-        cycle_nodes.reverse()
-        cycle_nodes.append(cycle_nodes[0])  # close the cycle
-
-        canon = canonicalize_cycle(cycle_nodes)
-        if canon in seen_cycles_canonical:
+        # Reconstruct the cycle by walking predecessors until repeat
+        cyc = []
+        cur = x
+        seen_local = set()
+        while cur not in seen_local and cur != -1:
+            seen_local.add(cur)
+            cur = pred[cur]
+        if cur == -1:
             continue
-        seen_cycles_canonical.add(canon)
 
-        # Compute product along the cycle
+        # cur is now inside the cycle; collect full cycle
+        start = cur
+        cyc_nodes = [start]
+        cur = pred[start]
+        while cur != start and cur != -1:
+            cyc_nodes.append(cur)
+            cur = pred[cur]
+        if cur == -1 or len(cyc_nodes) < 2:
+            continue
+        cyc_nodes.reverse()
+        cyc_nodes.append(cyc_nodes[0])  # close
+
+        canon = canonicalize_cycle(cyc_nodes)
+        if canon is None or canon in seen_canon:
+            continue
+
+        # Verify edges exist in the stated direction and compute product
         prod = 1.0
-        ok = True
-        for i in range(len(cycle_nodes) - 1):
-            u = cycle_nodes[i]
-            v = cycle_nodes[i + 1]
+        valid = True
+        for i in range(len(cyc_nodes) - 1):
+            u = cyc_nodes[i]
+            v = cyc_nodes[i + 1]
             r = adj_rate.get((u, v))
             if r is None:
-                ok = False
+                valid = False
                 break
             prod *= r
-        if not ok:
-            continue
 
-        if prod > 1.0 + 1e-12:
-            all_cycles.append((cycle_nodes, prod))
+        if not valid:
+            continue
+        if prod > 1.0 + EPS:
+            seen_canon.add(canon)
+            all_cycles.append((cyc_nodes, prod))
 
     return all_cycles
 
 
 def pick_first_profitable_cycle(cycles):
-    # Just return the first found profitable cycle
-    return cycles[0] if cycles else None
+    # Instead of returning whatever was first discovered by BF run,
+    # pick the first valid cycle from the collected list.
+    # Optionally, you could sort to make results deterministic.
+    if not cycles:
+        return None
+    # Determinize: pick shortest profitable cycle, then lexicographically smallest
+    cycles_sorted = sorted(cycles, key=lambda cp: (len(cp[0]), -cp[1], tuple(cp[0])))
+    return cycles_sorted[0]
 
 
 def pick_max_gain_cycle(cycles):
