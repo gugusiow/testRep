@@ -3,60 +3,72 @@ from flask import Flask, request, jsonify
 from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
-app.url_map.strict_slashes = False  # avoid 308 redirect HTML on trailing slashes
+app.url_map.strict_slashes = False  # avoid 308 redirects (HTML)
 
-# ---------- Core logic ----------
-def merge_slots(slots):
+MAX_HOUR = 4096  # inclusive bound per spec
+
+def solve_by_prefix(slots):
     """
-    Merge overlapping or touching [start, end] slots into busy blocks.
-    Final result sorted by end time asc, then start time asc (per spec note).
+    Prefix-sum on a fixed time grid [0..4096].
+    - Build delta so that for each [s,e): delta[s]+=1, delta[e]-=1
+    - Scan t=0..4096, maintain cur occupancy.
+      * Start a busy block when cur goes 0 -> >0 at t.
+      * End a busy block when cur goes >0 -> 0 at t (end time is t).
+    - minBoatsNeeded = max cur during the scan.
+    Returns (merged_intervals_sorted_by_end_then_start, min_boats).
     """
-    if not slots:
-        return []
-    slots = sorted(slots, key=lambda ab: (ab[0], ab[1]))  # sort by start, then end
+    # Difference array (one extra slot is fine)
+    delta = [0] * (MAX_HOUR + 1)
+
+    # Clamp inputs into [0, MAX_HOUR] and accumulate
+    for s, e in slots:
+        # accept anything with s < e; clamp to bounds to stay index-safe
+        if not isinstance(s, int) or not isinstance(e, int):
+            continue
+        if s >= e:
+            continue
+        s = max(0, min(MAX_HOUR, s))
+        e = max(0, min(MAX_HOUR, e))
+        if s >= e:
+            continue
+        delta[s] += 1
+        delta[e] -= 1
 
     merged = []
-    cs, ce = slots[0]
-    for s, e in slots[1:]:
-        if s <= ce:  # merge overlap or touch
-            if e > ce:
-                ce = e
-        else:
-            merged.append([cs, ce])
-            cs, ce = s, e
-    merged.append([cs, ce])
+    cur = 0
+    peak = 0
+    in_busy = False
+    start_t = None
 
-    # Spec requires end-time ascending (tie-break by start)
-    merged.sort(key=lambda ab: (ab[1], ab[0]))
-    return merged
-
-def min_boats_needed(slots):
-    """
-    Sweep-line over start/end events. Ends at time t free boats before starts at time t,
-    so we sort (time, delta) with delta -1 before +1.
-    """
-    events = []
-    for s, e in slots:
-        if isinstance(s, int) and isinstance(e, int) and s < e:
-            events.append((s, 1))   # start
-            events.append((e, -1))  # end
-
-    # Sort by time; at ties, -1 (end) before +1 (start)
-    events.sort(key=lambda x: (x[0], x[1]))
-    cur = peak = 0
-    for _, d in events:
-        cur += d
+    # Scan all integer hours 0..4096
+    for t in range(0, MAX_HOUR + 1):
+        cur += delta[t]
         if cur > peak:
             peak = cur
-    return peak
 
-# ---------- API ----------
+        if cur > 0 and not in_busy:
+            # entering busy
+            in_busy = True
+            start_t = t
+        elif cur == 0 and in_busy:
+            # leaving busy; block covers [start_t, t)
+            merged.append([start_t, t])
+            in_busy = False
+            start_t = None
+
+    # merged blocks are discovered in chronological order:
+    # starts and ends are strictly increasing → end-time ascending already.
+    # (If you still want to be extra explicit:)
+    merged.sort(key=lambda ab: (ab[1], ab[0]))
+
+    return merged, peak
+
 @app.post("/sailing-club/submission")
 def submission():
+    # Always return JSON (prevents '<!doctype ...>' parse errors)
     try:
         data = request.get_json(force=True, silent=False)
     except Exception:
-        # Always JSON, never HTML
         return jsonify({"solutions": []}), 200
 
     tcs = data.get("testCases") if isinstance(data, dict) else None
@@ -65,32 +77,30 @@ def submission():
 
     solutions = []
     for tc in tcs:
-        # Always produce an answer entry, even if malformed
+        # Always emit one solution per test case
         tc_id = tc.get("id") if isinstance(tc, dict) else None
         raw = tc.get("input", []) if isinstance(tc, dict) else []
 
-        # Normalize slots; if raw is bad, treat as empty
+        # normalize slots; if raw malformed, treat as empty
         slots = []
         if isinstance(raw, list):
             for pair in raw:
-                if (isinstance(pair, (list, tuple)) and len(pair) == 2 and
-                    isinstance(pair[0], int) and isinstance(pair[1], int)):
+                if (isinstance(pair, (list, tuple)) and len(pair) == 2):
                     s, e = pair
-                    if s < e:  # accept; don't drop for bounds to avoid "missing solutions"
-                        slots.append([s, e])
+                    # keep any s,e; clamp happens inside solver
+                    slots.append([s, e])
 
-        merged = merge_slots(slots)              # merges touching (s ≤ cur_end)
-        boats = min_boats_needed(slots)          # ends before starts at same t
+        merged, boats = solve_by_prefix(slots)
 
         solutions.append({
-            "id": str(tc_id) if tc_id is not None else "",
+            "id": "" if tc_id is None else str(tc_id),
             "sortedMergedSlots": merged if merged else [],
             "minBoatsNeeded": int(boats)
         })
 
     return jsonify({"solutions": solutions}), 200
 
-# Helpful JSON hint for accidental GETs (prevents HTML)
+# Helpful JSON for accidental GET (still JSON, never HTML)
 @app.get("/sailing-club/submission")
 def submission_get():
     return jsonify({
@@ -108,7 +118,6 @@ def handle_exc(_):
     return jsonify({"error": "Internal Server Error"}), 500
 
 if __name__ == "__main__":
-    # Local dev
     app.run(host="0.0.0.0", port=8000)
-    # Deploy (Render/Heroku/etc.):
-    # gunicorn -w 2 -b 0.0.0.0:$PORT app:app
+    # Deploy: gunicorn -w 2 -b 0.0.0.0:$PORT app:app
+
