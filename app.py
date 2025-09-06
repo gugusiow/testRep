@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 from functools import lru_cache
 from typing import List, Tuple, Optional, Dict, Any
-from math import log, exp
+import math
+from __future__ import annotations
 
 app = Flask(__name__)
 
@@ -27,6 +28,231 @@ def chase_flags():
         "challenge5": "your_flag_5"
     }
     return jsonify(flags), 201
+
+####### trading bot
+BULL_TOKENS = {
+    "bull","bullish","buy","long","up","rally","pump","moon","adopt","adoption",
+    "approve","approval","etf","etfs","reserve","support","positive","surge",
+    "breakout","all-time","ath","institutional","accumulate","buying","bid",
+    "liquidity","halving","order","executive","legalize","legalizes","strategic",
+    "fund","funding","backed","stimulus","qe","quantitative","easing","treasury"
+}
+BEAR_TOKENS = {
+    "bear","bearish","sell","short","down","dump","ban","bans","restrict",
+    "crackdown","negative","hacked","hack","rug","scam","lawsuit","probe",
+    "investigation","fraud","liquidation","defaults","insolvency","shutdown",
+    "outage","exploit","delay","rejection","reject","rejects"
+}
+
+SOURCE_WEIGHT = {
+    "twitter": 1.0, "x": 1.0, "coindesk": 1.1, "cointelegraph": 1.05,
+    "bloomberg": 1.15, "reuters": 1.15
+}
+
+TOKENIZER_RE = re.compile(r"https?://\S+|[^a-z0-9\-\+\#\.\$]+")
+
+def tokenize(text: Optional[str]) -> List[str]:
+    if not text or not isinstance(text, str):
+        return []
+    txt = text.lower()
+    txt = TOKENIZER_RE.sub(" ", txt)
+    toks = [t for t in txt.split() if t]
+    return toks
+
+def safe_float(x: Any) -> Optional[float]:
+    try:
+        f = float(x)
+        if math.isfinite(f):
+            return f
+        return None
+    except Exception:
+        return None
+
+def valid_candle(c: Dict[str, Any]) -> bool:
+    return all(
+        safe_float(c.get(k)) is not None
+        for k in ("open","high","low","close","volume","timestamp")
+    )
+
+def typical_price(c: Dict[str, Any]) -> Optional[float]:
+    h = safe_float(c.get("high"))
+    l = safe_float(c.get("low"))
+    cl = safe_float(c.get("close"))
+    if None in (h,l,cl):
+        return None
+    return (h + l + cl) / 3.0
+
+def range_size(c: Dict[str, Any]) -> Optional[float]:
+    h = safe_float(c.get("high"))
+    l = safe_float(c.get("low"))
+    if None in (h,l):
+        return None
+    return max(1e-9, h - l)
+
+def wick_skew(c: Dict[str, Any]) -> Optional[float]:
+    # Positive if bullish body with small upper wick; negative if bearish with long upper wick
+    o = safe_float(c.get("open"))
+    h = safe_float(c.get("high"))
+    l = safe_float(c.get("low"))
+    cl = safe_float(c.get("close"))
+    if None in (o,h,l,cl):
+        return None
+    body = cl - o
+    rng = max(1e-9, h - l)
+    upper = h - max(o, cl)
+    lower = min(o, cl) - l
+    # body normalized plus lower-upper wick preference (lower wick bullish)
+    return (body / rng) + (lower - upper) / rng
+
+def pct_change(a: float, b: float) -> float:
+    # percent change from a -> b
+    if a == 0:
+        return 0.0
+    return (b - a) / abs(a)
+
+def source_weight(src: Optional[str]) -> float:
+    if not src or not isinstance(src, str):
+        return 1.0
+    key = src.strip().lower()
+    return SOURCE_WEIGHT.get(key, 1.0)
+
+# ----------------------------- Scoring -----------------------------
+
+def sentiment_score(title: Optional[str], src: Optional[str]) -> float:
+    toks = tokenize(title)
+    bulls = sum(1 for t in toks if t in BULL_TOKENS)
+    bears = sum(1 for t in toks if t in BEAR_TOKENS)
+    raw = bulls - bears
+    w = source_weight(src)
+    # tanh squashing to keep impact bounded
+    return math.tanh(raw * 0.8) * w
+
+def momentum_score(prev: List[Dict[str, Any]], first_obs: Dict[str, Any]) -> float:
+    # Use last two prev closes and first observation close
+    if len(prev) < 2:
+        return 0.0
+    c1 = safe_float(prev[-2].get("close"))
+    c2 = safe_float(prev[-1].get("close"))
+    c3 = safe_float(first_obs.get("close"))
+    if None in (c1,c2,c3):
+        return 0.0
+    m12 = pct_change(c1, c2)
+    m23 = pct_change(c2, c3)
+    # emphasize acceleration
+    accel = m23 - m12
+    # score = recent move + acceleration
+    score = 0.6 * m23 + 0.4 * accel
+    # clamp for robustness
+    return max(-0.1, min(0.1, score))  # +/-10%
+
+def volatility_score(prev: List[Dict[str, Any]], first_obs: Dict[str, Any]) -> float:
+    # ATR-like: median range of last 3 prev + first obs vs price
+    recent = (prev[-3:] if len(prev) >= 3 else prev[:]) + [first_obs]
+    ranges = [range_size(c) for c in recent if valid_candle(c)]
+    closes = [safe_float(c.get("close")) for c in recent if valid_candle(c)]
+    ranges = [r for r in ranges if r is not None]
+    closes = [c for c in closes if c is not None]
+    if not ranges or not closes:
+        return 0.0
+    ranges_sorted = sorted(ranges)
+    med = ranges_sorted[len(ranges_sorted)//2]
+    px = closes[-1]
+    rel = med / max(1e-6, px)
+    # Convert to bounded contribution: higher vol increases conviction, not direction
+    return max(0.0, min(0.08, rel))  # up to 8% conviction boost
+
+def structure_score(prev: List[Dict[str, Any]], first_obs: Dict[str, Any]) -> float:
+    # Wick skew of last previous and first observation
+    comp = []
+    if prev:
+        s1 = wick_skew(prev[-1])
+        if s1 is not None:
+            comp.append(s1)
+    s2 = wick_skew(first_obs)
+    if s2 is not None:
+        comp.append(s2)
+    if not comp:
+        return 0.0
+    s = sum(comp) / len(comp)
+    # bound
+    return max(-0.12, min(0.12, s))  # wick skew can be strong, bound it
+
+def build_signal(event: Dict[str, Any]) -> Tuple[float, str]:
+    """
+    Returns (score, decision) where decision is 'LONG' or 'SHORT'.
+    Positive score -> LONG, negative -> SHORT. Magnitude is conviction.
+    """
+    prev = event.get("previous_candles") or []
+    obs = event.get("observation_candles") or []
+    if not prev or not obs or not isinstance(obs, list) or len(obs) < 1:
+        return (0.0, "SHORT")  # neutral fallback, decision will be overwritten by sign later
+    
+    first_obs = obs[0]
+    # Ensure candles are minimally valid
+    if not (valid_candle(first_obs) and all(valid_candle(c) for c in prev if isinstance(c, dict))):
+        return (0.0, "SHORT")
+
+    # Components
+    s_sent = sentiment_score(event.get("title"), event.get("source"))
+    s_mom = momentum_score(prev, first_obs)
+    s_vol = volatility_score(prev, first_obs)
+    s_struct = structure_score(prev, first_obs)
+
+    # Aggregate:
+    # Direction from sentiment + momentum + structure.
+    # Volatility adds to magnitude (conviction) by scaling.
+    directional = (0.45 * s_sent) + (0.40 * s_mom) + (0.15 * s_struct)
+    # Scale up magnitude by (1 + vol) but keep sign from directional
+    magnitude = abs(directional) * (1.0 + s_vol)
+    score = math.copysign(magnitude, directional)
+
+    decision = "LONG" if score >= 0 else "SHORT"
+    return (score, decision)
+
+@app.route("/trading-bot", methods=["POST"])
+def trading_bot():
+    try:
+        data = request.get_json(force=True, silent=False)
+    except Exception:
+        return jsonify({"error": "Invalid JSON"}), 400
+
+    if not isinstance(data, list):
+        return jsonify({"error": "Expected a JSON array of news events"}), 400
+
+    scored: List[Tuple[float, int, str]] = []  # (abs_score, id, decision) for sorting
+    for ev in data:
+        if not isinstance(ev, dict):
+            continue
+        eid = ev.get("id")
+        if not isinstance(eid, int):
+            # accept numeric strings too
+            try:
+                eid = int(eid)
+            except Exception:
+                continue
+
+        score, decision = build_signal(ev)
+        # Store absolute value for ranking but keep sign for decision
+        scored.append((abs(score), eid, "LONG" if score >= 0 else "SHORT"))
+
+    if not scored:
+        return jsonify([]), 200
+
+    # Deterministic: sort by abs(score) desc, tie-breaker id asc
+    scored.sort(key=lambda x: (-x[0], x[1]))
+
+    # Pick top 50
+    top_n = 50 if len(scored) >= 50 else len(scored)
+    out = [{"id": eid, "decision": dec} for (_abs_s, eid, dec) in scored[:top_n]]
+
+    # If you must always return exactly 50, you could pad with lowest-confidence items:
+    # while len(out) < 50 and len(out) < len(scored):
+    #     _abs_s, eid, dec = scored[len(out)]
+    #     out.append({"id": eid, "decision": dec})
+
+    return jsonify(out), 200
+
+###### trading bot end
 
 ####### mages gambit start
 def earliest_clear_time(intel: List[List[int]], reserve: int, stamina: int) -> int:
@@ -207,11 +433,6 @@ from math import log
 EPS = 1e-9  # numerical tolerance; adjust if needed
 
 def _reduce_to_simple_cycle(closed_nodes):
-    """
-    closed_nodes: like [n0, n1, ..., nk, n0]
-    Returns a closed simple cycle [m0, m1, ..., mr, m0] with no repeated nodes except closure.
-    If multiple repeats exist, this keeps the innermost simple loop.
-    """
     # Map node -> last index seen
     last_pos = {}
     for i, u in enumerate(closed_nodes):
@@ -390,7 +611,52 @@ def solve():
         cycles = find_profitable_cycles(n, edges)
 
         if idx == 0:
-            chosen = pick_first_profitable_cycle(cycles)
+            # First challenge: ensure we haven't missed shorter cycles by doing a full enumeration (n is small here)
+            adj: Dict[int, List[Tuple[int,float]]] = {i: [] for i in range(n)}
+            for u,v,r in edges:
+                adj[u].append((v,r))
+
+            enum_cycles = []  # list of (cycle_nodes, product)
+            visited = [False]*n
+
+            def dfs(start, node, product, path):
+                # path includes node indices, without closure
+                for nxt, rate in adj[node]:
+                    if nxt == start and len(path) >= 2:  # found cycle with >=3 distinct nodes incl. start
+                        cyc_nodes = path + [nxt]
+                        enum_cycles.append((cyc_nodes, product*rate))
+                        continue
+                    if not visited[nxt] and len(path) + 1 < n:  # simple cycle constraint
+                        visited[nxt] = True
+                        dfs(start, nxt, product*rate, path + [nxt])
+                        visited[nxt] = False
+
+            for s in range(n):
+                visited[s] = True
+                dfs(s, s, 1.0, [s])
+                visited[s] = False
+
+            # Merge with cycles detected via Bellman-Ford (avoid duplicates by canonical form)
+            def canon(c):
+                core = c[:-1]
+                m = len(core)
+                if m==0: return ()
+                rots = [tuple(core[i:]+core[:i]) for i in range(m)]
+                return min(rots)
+            seen_local = {canon(c): (c,p) for c,p in cycles}
+            for c,p in enum_cycles:
+                key = canon(c)
+                if key not in seen_local:
+                    seen_local[key] = (c,p)
+            # Filter profitable
+            all_pos = [(c,p) for c,p in seen_local.values() if p > 1+EPS]
+            if not all_pos:
+                chosen = None
+            else:
+                # Group by edge length (len(c)-1), take minimal length group, then max product inside group
+                min_len = min(len(c)-1 for c,_ in all_pos)
+                cand = [(c,p) for c,p in all_pos if (len(c)-1)==min_len]
+                chosen = max(cand, key=lambda cp: cp[1])
         else:
             chosen = pick_max_gain_cycle(cycles)
 
@@ -403,7 +669,6 @@ def solve():
         results.append(format_response_cycle(cycle_nodes, prod, goods))
 
     return jsonify(results), 200
-
 ###### ink archive end
 
 if __name__ == '__main__':
