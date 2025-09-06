@@ -498,6 +498,223 @@ def handle_slsm():
         return jsonify({'error': str(e)}), 500
 
 
+# Persistent per-game state (in-memory)
+# In production, replace with external store keyed by game_uuid
+games = defaultdict(lambda: {
+    "heading_deg": 0,         # 0=N, 90=E, 180=S, 270=W, with 45° steps permitted
+    "last_run": 0,
+    "last_best": None,
+})
+
+# Constants from spec
+MAX_MOMENTUM = 4
+MIN_MOMENTUM = -4
+
+# Helper functions
+
+def clamp_heading(h):
+    # Normalize to [0, 360) in 45° increments
+    h = ((h % 360) + 360) % 360
+    # Round to nearest 45 to stay on the grid of allowed rotations
+    return (round(h / 45) * 45) % 360
+
+def sensor_to_walls(sensor):
+    # sensor indices: [-90, -45, 0, +45, +90]; 1 means wall within 12 cm, 0 means clear
+    # We’ll interpret 1 as blocked, 0 as open.
+    return {
+        -90: sensor[0] == 1,
+        -45: sensor[1] == 1,
+        0:   sensor[2] == 1,
+        45:  sensor[3] == 1,
+        90:  sensor[4] == 1,
+    }
+
+def is_cardinal(h):
+    return h % 90 == 0
+
+def left_hand_preference(walls):
+    # Return desired relative direction priority: left, forward-left, forward, forward-right, right
+    # Only use forward for straight moves; turns handled explicitly.
+    # We’ll pick the first open direction.
+    order = [-90, -45, 0, 45, 90]
+    for rel in order:
+        if not walls[rel]:
+            return rel
+    # Dead-end: everything blocked -> we must brake/stop and rotate
+    return None
+
+def plan_tokens(momentum, heading_deg, sensor):
+    """
+    Return a list of safe tokens as a small batch.
+    Strategy:
+    - Prefer left if open. Otherwise go forward if open. Otherwise try right. Otherwise stop and rotate.
+    - Use in-place rotation only at momentum 0.
+    - Use F2 to accelerate up to +2, then hold with F1; brake with BB as needed.
+    - Avoid illegal moving rotations by checking m_eff <= 1.
+    """
+    walls = sensor_to_walls(sensor)
+    tokens = []
+
+    # If goal already reached or we’re at rest and front blocked with all around blocked -> rotate to find open
+    # Decide relative direction
+    rel = left_hand_preference(walls)
+
+    # If moving backward (negative momentum), first brake to 0
+    if momentum < 0:
+        # BB reduces by 2 toward 0; legal and adds half-step translation in the reverse direction
+        tokens.append("BB")
+        return tokens
+
+    # If we want to turn left/right from a cardinal heading using corner turns where safe
+    def try_corner(turn_dir):
+        # turn_dir: 'L' or 'R'
+        # We will attempt a tight corner with F1 or F0 so that m_eff <= 1.
+        # Tight requires m_eff <= 1.
+        # Choose F1 if already at +1, else F2/F1 sequence to get to +1 at entry then corner,
+        # but we must keep batch small. We'll do:
+        # - If momentum == 0: F2 to +1 straight half-step, then corner F1T{L/R}.
+        #   However corner token format is (F?|V?)(L|R)(T|W)[(L|R)], applied immediately,
+        #   so we can do: "F1" to get/hold +1, then "(F1)(L|R)T".
+        # Simpler: at momentum 0: do in-place rotation then go straight; but that costs extra 200 ms.
+        # We'll opt for safe and simple: if momentum == 0 -> in-place rotate 45°, then accelerate straight.
+        nonlocal tokens
+        if momentum == 0:
+            tokens.append(turn_dir)  # in-place 45°
+            return True
+        # momentum > 0: consider moving rotation with F0L/F0R or F1L/F1R:
+        # Moving rotations allowed only if m_eff <= 1.
+        # If momentum == 1 and we use F1L, m_eff = (1 + 1)/2 = 1 -> allowed.
+        # If momentum == 2 and we use F0L, exit momentum 1 -> m_eff = (2+1)/2 = 1.5 -> illegal.
+        if momentum == 1:
+            tokens.append(f"F1{turn_dir}")
+            return True
+        if momentum == 0:
+            tokens.append(f"F1{turn_dir}")
+            return True
+        # Otherwise, we need to reduce momentum with BB until <=1 before moving rotation
+        tokens.append("BB")
+        return True
+
+    # Decide action based on rel preference
+    if rel is None:
+        # Dead-end: brake to 0; if already 0, rotate 90° left via two L to seek exit
+        if momentum > 0:
+            tokens.append("BB")  # will move half-step forward while braking
+        else:
+            # momentum == 0
+            tokens.extend(["L", "L"])
+        return tokens
+
+    if rel == 0:
+        # Forward is open. Accelerate up to +2 then hold.
+        if momentum < 2:
+            tokens.append("F2")
+        else:
+            tokens.append("F1")
+        return tokens
+
+    if rel in (-45, -90):
+        # Prefer to turn left, tighter first
+        if rel == -45:
+            turn = "L"
+            did = try_corner(turn)
+            if did:
+                return tokens
+        else:
+            # -90 means harder left; do two steps of left: either two moving rotations or two in-place if at 0
+            # Keep it simple and safe:
+            if momentum == 0:
+                tokens.extend(["L", "L"])
+            elif momentum == 1:
+                tokens.append("F1L")  # now heading -45
+            else:
+                tokens.append("BB")
+            return tokens
+
+    if rel in (45, 90):
+        # Need to turn right
+        if rel == 45:
+            turn = "R"
+            did = try_corner(turn)
+            if did:
+                return tokens
+        else:
+            # +90
+            if momentum == 0:
+                tokens.extend(["R", "R"])
+            elif momentum == 1:
+                tokens.append("F1R")
+            else:
+                tokens.append("BB")
+            return tokens
+
+    # Fallback: hold if forward looks fine, else brake
+    if not walls[0]:
+        tokens.append("F1" if momentum >= 1 else "F2")
+    else:
+        tokens.append("BB")
+    return tokens
+
+
+@app.route("/micro-mouse", methods=["POST"])
+def micro_mouse():
+    data = request.get_json(force=True)
+
+    # Basic validation per spec
+    required = ["game_uuid", "sensor_data", "total_time_ms", "goal_reached",
+                "best_time_ms", "run_time_ms", "run", "momentum"]
+    if not isinstance(data, dict) or any(k not in data for k in required):
+        # Returning an empty or invalid instructions array would crash the simulator per spec,
+        # but as a controller we should still return a valid response. We'll send an 'end': true.
+        return jsonify({"instructions": [], "end": True})
+
+    game_id = data["game_uuid"]
+    sensor = data["sensor_data"]
+    momentum = int(data["momentum"])
+    run = int(data["run"])
+    goal_reached = bool(data["goal_reached"])
+    best_time_ms = data["best_time_ms"]
+
+    # Track per game state for simple heading bookkeeping (not strictly required)
+    st = games[game_id]
+    if st["last_run"] != run:
+        # New run started
+        st["last_run"] = run
+    if best_time_ms is not None:
+        st["last_best"] = best_time_ms
+
+    # If challenge should end (e.g., after reaching goal and getting a best), you could decide to end.
+    # Here we keep going until the simulator ends us or caller decides.
+    if goal_reached:
+        # Stop issuing commands for safety; end the challenge to record the score.
+        return jsonify({"instructions": [], "end": True})
+
+    # Plan a small batch of tokens to amortize the 50 ms thinking time.
+    # Keep batch size modest to remain responsive.
+    try:
+        tokens = plan_tokens(momentum, st["heading_deg"], sensor)
+    except Exception:
+        # On any planner error, end safely
+        return jsonify({"instructions": [], "end": True})
+
+    # Ensure we never send an empty instructions array, which would crash per spec.
+    if not tokens:
+        tokens = ["F1"] if momentum >= 1 else ["F2"]
+
+    # Update our internal heading approximation based on rotations we requested.
+    # Note: We only track in-place 45° turns here; moving rotations and corners are not
+    # simulated locally because we don't know if they succeed until sensors update next call.
+    for t in tokens:
+        if t == "L":
+            st["heading_deg"] = clamp_heading(st["heading_deg"] - 45)
+        elif t == "R":
+            st["heading_deg"] = clamp_heading(st["heading_deg"] + 45)
+        # We skip heading updates for moving rotations and corners; the next sensor input will reflect reality.
+
+    return jsonify({
+        "instructions": tokens,
+        "end": False
+    })
 
     
 if __name__ == '__main__':
