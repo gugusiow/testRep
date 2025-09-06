@@ -26,12 +26,14 @@ import numpy as np
 import cv2
 from flask import Flask, request, jsonify
 
-# Optional Tesseract (not required)
+# Optional OCR libraries
 try:
-    import pytesseract  # type: ignore
-    TESSERACT_OK = True
+    import easyocr
+    EASYOCR_READER = easyocr.Reader(['en'], gpu=False)
+    EASYOCR_OK = True
 except Exception:
-    TESSERACT_OK = False
+    EASYOCR_READER = None
+    EASYOCR_OK = False
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -186,38 +188,41 @@ def _init_digit_templates():
         _DIGIT_TEMPLATES[d] = tpl
 
 def _ocr_digits_roi(roi_bgr: np.ndarray) -> Optional[int]:
-    # Try Tesseract if present
-    if TESSERACT_OK:
-        cfgs = [
-            "--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789",
-            "--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789",
-            "--oem 1 --psm 8 -c tessedit_char_whitelist=0123456789",
-        ]
-        for cfg in cfgs:
-            try:
-                txt = pytesseract.image_to_string(roi_bgr, config=cfg)
-                txt = "".join(ch for ch in txt if ch.isdigit())
-                if txt:
-                    val = int(txt)
-                    if 1 <= val <= 999:
-                        return val
-            except Exception:
-                pass
-        # grayscale retry
-        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)
-        for cfg in cfgs[:2]:
-            try:
-                txt = pytesseract.image_to_string(gray, config=cfg)
-                txt = "".join(ch for ch in txt if ch.isdigit())
-                if txt:
-                    val = int(txt)
-                    if 1 <= val <= 999:
-                        return val
-            except Exception:
-                pass
+    # Try EasyOCR if available
+    if EASYOCR_OK and EASYOCR_READER is not None:
+        try:
+            # EasyOCR works better with grayscale for digits
+            roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+            
+            # Try multiple preprocessing approaches
+            variants = [roi_gray]
+            
+            # Enhance contrast
+            enhanced = cv2.equalizeHist(roi_gray)
+            variants.append(enhanced)
+            
+            # Threshold
+            _, thresh = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variants.append(thresh)
+            
+            for variant in variants:
+                try:
+                    results = EASYOCR_READER.readtext(variant, allowlist='0123456789', width_ths=0.7, height_ths=0.7)
+                    for (bbox, text, confidence) in results:
+                        if confidence > 0.5:  # EasyOCR confidence threshold
+                            # Extract digits only
+                            digits = "".join(ch for ch in text if ch.isdigit())
+                            if digits:
+                                val = int(digits)
+                                if 1 <= val <= 999:
+                                    return val
+                except Exception:
+                    continue
+                    
+        except Exception:
+            pass
 
-    # Template OCR fallback
+    # Template OCR fallback (existing code)
     _init_digit_templates()
     roi = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
     variants = []
