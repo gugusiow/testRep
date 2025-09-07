@@ -686,7 +686,6 @@ class GameState:
         # Strategy variables
         self.current_crow_index = 0
         self.crow_ids = list(self.crows.keys())
-        self.exploration_targets = {crow_id: None for crow_id in self.crow_ids}
         self.scan_cooldown = {crow_id: 0 for crow_id in self.crow_ids}
         self.last_scan_pos = {crow_id: None for crow_id in self.crow_ids}
         
@@ -739,38 +738,38 @@ class GameState:
         self.current_crow_index = (self.current_crow_index + 1) % len(self.crow_ids)
         
         crow = self.crows[crow_id]
-        current_pos = (crow['x'], crow['y'])
+        current_x, current_y = crow['x'], crow['y']
         
-        # Check if we should scan (based on cooldown and recent scans)
+        # Check if we should scan
         if self.scan_cooldown[crow_id] <= 0 and self.should_scan(crow_id):
-            self.scan_cooldown[crow_id] = 3  # Reset cooldown
+            self.scan_cooldown[crow_id] = 3
             return {
-                'crow_id': crow_id,
-                'action_type': 'scan'
+                'action_type': 'scan',
+                'crow_id': crow_id
             }
         
-        # Get next move direction (simple greedy approach)
-        direction = self.get_simple_move_direction(crow_id)
+        # Try to move to an adjacent unknown cell
+        direction = self.get_move_direction_towards_unknown(crow_id)
         if direction:
             self.scan_cooldown[crow_id] = max(0, self.scan_cooldown[crow_id] - 1)
             return {
-                'crow_id': crow_id,
                 'action_type': 'move',
+                'crow_id': crow_id,
                 'direction': direction
             }
         
-        # If no move found, scan instead
+        # If no good move, scan instead
         self.scan_cooldown[crow_id] = 3
         return {
-            'crow_id': crow_id,
-            'action_type': 'scan'
+            'action_type': 'scan',
+            'crow_id': crow_id
         }
     
     def should_scan(self, crow_id):
         crow = self.crows[crow_id]
         current_pos = (crow['x'], crow['y'])
         
-        # Don't scan if we just scanned here recently
+        # Don't scan if we just scanned here
         if self.last_scan_pos.get(crow_id) == current_pos:
             return False
         
@@ -784,66 +783,66 @@ class GameState:
                 if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
                     if self.global_map[x][y] == '?':
                         unknown_count += 1
-                        if unknown_count >= 2:  # Scan if at least 2 unknown cells nearby
+                        if unknown_count >= 2:
                             return True
         return False
     
-    def get_simple_move_direction(self, crow_id):
-        """Simple greedy movement towards nearest unknown cell"""
+    def get_move_direction_towards_unknown(self, crow_id):
+        """Simple movement towards adjacent unknown cells"""
         crow = self.crows[crow_id]
         current_x, current_y = crow['x'], crow['y']
         
-        # Check adjacent cells first (greedy approach)
-        directions = [('N', -1, 0), ('S', 1, 0), ('E', 0, 1), ('W', 0, -1)]
+        # Check all four directions
+        directions = [
+            ('N', -1, 0),
+            ('S', 1, 0),
+            ('E', 0, 1),
+            ('W', 0, -1)
+        ]
         
-        # Prefer directions with unknown cells
+        # First priority: move towards unknown cells
         for direction, dx, dy in directions:
             new_x, new_y = current_x + dx, current_y + dy
-            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and
                 self.global_map[new_x][new_y] != 'W' and
                 (new_x, new_y) not in crow['visited']):
                 return direction
         
-        # If all adjacent cells visited, move towards any unknown cell
+        # Second priority: move to any valid unvisited cell
         for direction, dx, dy in directions:
             new_x, new_y = current_x + dx, current_y + dy
-            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and
                 self.global_map[new_x][new_y] != 'W'):
                 return direction
         
-        return None
-    
-    def find_nearest_unknown_simple(self, start_pos):
-        """Simple BFS with limited depth to avoid timeouts"""
-        x, y = start_pos
-        max_depth = 10  # Limit search depth
-        
-        # Check immediate vicinity first
-        for depth in range(1, min(4, max_depth + 1)):
-            for dx in range(-depth, depth + 1):
-                for dy in range(-depth, depth + 1):
-                    if abs(dx) + abs(dy) == depth:  # Manhattan distance
-                        new_x, new_y = x + dx, y + dy
-                        if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and
-                            self.global_map[new_x][new_y] == '?'):
-                            return (new_x, new_y)
         return None
 
 @app.route('/fog-of-wall', methods=['POST'])
 def fog_of_wall():
     try:
         data = request.get_json()
-        challenger_id = data['challenger_id']
-        game_id = data['game_id']
+        if not data:
+            return jsonify({'error': 'No JSON data received'}), 400
+        
+        challenger_id = data.get('challenger_id')
+        game_id = data.get('game_id')
+        
+        if not challenger_id or not game_id:
+            return jsonify({'error': 'Missing challenger_id or game_id'}), 400
+        
+        response = None
         
         # Initialize or update game state
         if 'test_case' in data:
             # New test case
             game_states[game_id] = GameState(data['test_case'])
             response = game_states[game_id].get_next_action()
-        else:
+        elif 'previous_action' in data:
             # Update based on previous action
             prev_action = data['previous_action']
+            if game_id not in game_states:
+                return jsonify({'error': 'Game not initialized'}), 400
+                
             game_state = game_states[game_id]
             
             if prev_action['your_action'] == 'move':
@@ -856,18 +855,37 @@ def fog_of_wall():
                     prev_action['crow_id'],
                     prev_action['scan_result']
                 )
+            else:
+                return jsonify({'error': 'Invalid previous action'}), 400
             
             response = game_state.get_next_action()
+        else:
+            return jsonify({'error': 'Invalid request format'}), 400
         
-        # Add common fields
-        response['challenger_id'] = challenger_id
-        response['game_id'] = game_id
+        # Build the final response with exact required format
+        final_response = {
+            'challenger_id': challenger_id,
+            'game_id': game_id
+        }
         
-        return jsonify(response)
+        # Add action-specific fields
+        if response['action_type'] == 'submit':
+            final_response['action_type'] = 'submit'
+            final_response['submission'] = response['submission']
+        elif response['action_type'] == 'scan':
+            final_response['action_type'] = 'scan'
+            final_response['crow_id'] = response['crow_id']
+        elif response['action_type'] == 'move':
+            final_response['action_type'] = 'move'
+            final_response['crow_id'] = response['crow_id']
+            final_response['direction'] = response['direction']
         
+        return jsonify(final_response)
+        
+    except KeyError as e:
+        return jsonify({'error': f'Missing key in request: {str(e)}'}), 400
     except Exception as e:
-        print(f"Error: {e}")
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 ##### fog of wall end
 
