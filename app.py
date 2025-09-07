@@ -665,8 +665,8 @@ class GameState:
         self.total_walls = test_case['num_of_walls']
         self.crows = {crow['id']: {'x': crow['x'], 'y': crow['y'], 'visited': set()} for crow in test_case['crows']}
         
-        # Initialize the global map
-        self.global_map = {}
+        # Initialize the global map - use a 2D array for faster access
+        self.global_map = [['?' for _ in range(self.grid_size)] for _ in range(self.grid_size)]
         self.known_walls = set()
         self.unknown_cells = set()
         
@@ -677,55 +677,54 @@ class GameState:
         
         # Mark starting positions as empty
         for crow_id, crow in self.crows.items():
-            pos = (crow['x'], crow['y'])
-            self.global_map[pos] = '_'
-            if pos in self.unknown_cells:
-                self.unknown_cells.remove(pos)
-            crow['visited'].add(pos)
+            x, y = crow['x'], crow['y']
+            self.global_map[x][y] = '_'
+            if (x, y) in self.unknown_cells:
+                self.unknown_cells.remove((x, y))
+            crow['visited'].add((x, y))
         
         # Strategy variables
         self.current_crow_index = 0
         self.crow_ids = list(self.crows.keys())
-        self.exploration_queue = {crow_id: deque() for crow_id in self.crow_ids}
+        self.exploration_targets = {crow_id: None for crow_id in self.crow_ids}
         self.scan_cooldown = {crow_id: 0 for crow_id in self.crow_ids}
+        self.last_scan_pos = {crow_id: None for crow_id in self.crow_ids}
         
     def update_from_scan(self, crow_id, scan_result):
         crow = self.crows[crow_id]
         center_x, center_y = crow['x'], crow['y']
+        self.last_scan_pos[crow_id] = (center_x, center_y)
         
         for dx in range(-2, 3):
             for dy in range(-2, 3):
                 abs_x = center_x + dx
                 abs_y = center_y + dy
-                pos = (abs_x, abs_y)
                 
                 # Check if within bounds
                 if 0 <= abs_x < self.grid_size and 0 <= abs_y < self.grid_size:
                     cell_value = scan_result[dx + 2][dy + 2]
                     
                     if cell_value == 'W':
-                        self.global_map[pos] = 'W'
+                        self.global_map[abs_x][abs_y] = 'W'
                         self.known_walls.add(f"{abs_x}-{abs_y}")
-                        if pos in self.unknown_cells:
-                            self.unknown_cells.remove(pos)
+                        if (abs_x, abs_y) in self.unknown_cells:
+                            self.unknown_cells.remove((abs_x, abs_y))
                     elif cell_value == '_':
-                        self.global_map[pos] = '_'
-                        if pos in self.unknown_cells:
-                            self.unknown_cells.remove(pos)
-                        # Add to exploration queue if not visited by this crow
-                        if pos not in crow['visited']:
-                            self.exploration_queue[crow_id].append(pos)
+                        self.global_map[abs_x][abs_y] = '_'
+                        if (abs_x, abs_y) in self.unknown_cells:
+                            self.unknown_cells.remove((abs_x, abs_y))
                 
     def update_from_move(self, crow_id, new_pos):
-        old_pos = (self.crows[crow_id]['x'], self.crows[crow_id]['y'])
-        self.crows[crow_id]['x'], self.crows[crow_id]['y'] = new_pos
-        self.crows[crow_id]['visited'].add(new_pos)
+        new_x, new_y = new_pos
+        old_x, old_y = self.crows[crow_id]['x'], self.crows[crow_id]['y']
+        self.crows[crow_id]['x'], self.crows[crow_id]['y'] = new_x, new_y
+        self.crows[crow_id]['visited'].add((new_x, new_y))
         
         # Mark the new position as empty
-        if new_pos not in self.global_map or self.global_map[new_pos] != '_':
-            self.global_map[new_pos] = '_'
-            if new_pos in self.unknown_cells:
-                self.unknown_cells.remove(new_pos)
+        if self.global_map[new_x][new_y] != '_':
+            self.global_map[new_x][new_y] = '_'
+            if (new_x, new_y) in self.unknown_cells:
+                self.unknown_cells.remove((new_x, new_y))
     
     def get_next_action(self):
         # Check if we've found all walls
@@ -742,16 +741,16 @@ class GameState:
         crow = self.crows[crow_id]
         current_pos = (crow['x'], crow['y'])
         
-        # Check if we should scan (every 5 moves or when cooldown is up)
+        # Check if we should scan (based on cooldown and recent scans)
         if self.scan_cooldown[crow_id] <= 0 and self.should_scan(crow_id):
-            self.scan_cooldown[crow_id] = 5  # Reset cooldown
+            self.scan_cooldown[crow_id] = 3  # Reset cooldown
             return {
                 'crow_id': crow_id,
                 'action_type': 'scan'
             }
         
-        # Get next move direction
-        direction = self.get_next_move_direction(crow_id)
+        # Get next move direction (simple greedy approach)
+        direction = self.get_simple_move_direction(crow_id)
         if direction:
             self.scan_cooldown[crow_id] = max(0, self.scan_cooldown[crow_id] - 1)
             return {
@@ -761,112 +760,73 @@ class GameState:
             }
         
         # If no move found, scan instead
-        self.scan_cooldown[crow_id] = 5
+        self.scan_cooldown[crow_id] = 3
         return {
             'crow_id': crow_id,
             'action_type': 'scan'
         }
     
     def should_scan(self, crow_id):
-        # Scan if we haven't scanned this area recently and there are unknown cells nearby
         crow = self.crows[crow_id]
-        unknown_nearby = 0
+        current_pos = (crow['x'], crow['y'])
         
+        # Don't scan if we just scanned here recently
+        if self.last_scan_pos.get(crow_id) == current_pos:
+            return False
+        
+        # Count unknown cells in scan range
+        unknown_count = 0
         for dx in range(-2, 3):
             for dy in range(-2, 3):
                 if dx == 0 and dy == 0:
                     continue
-                pos = (crow['x'] + dx, crow['y'] + dy)
-                if pos in self.unknown_cells:
-                    unknown_nearby += 1
-        
-        return unknown_nearby > 2  # Scan if more than 2 unknown cells nearby
+                x, y = crow['x'] + dx, crow['y'] + dy
+                if 0 <= x < self.grid_size and 0 <= y < self.grid_size:
+                    if self.global_map[x][y] == '?':
+                        unknown_count += 1
+                        if unknown_count >= 2:  # Scan if at least 2 unknown cells nearby
+                            return True
+        return False
     
-    def get_next_move_direction(self, crow_id):
+    def get_simple_move_direction(self, crow_id):
+        """Simple greedy movement towards nearest unknown cell"""
         crow = self.crows[crow_id]
-        current_pos = (crow['x'], crow['y'])
+        current_x, current_y = crow['x'], crow['y']
         
-        # First, try to explore from the queue
-        while self.exploration_queue[crow_id]:
-            target_pos = self.exploration_queue[crow_id][0]
-            if target_pos in crow['visited']:
-                self.exploration_queue[crow_id].popleft()
-                continue
-            
-            # Find path to target
-            path = self.find_path(current_pos, target_pos, crow_id)
-            if path:
-                next_pos = path[0]
-                return self.get_direction(current_pos, next_pos)
-            else:
-                self.exploration_queue[crow_id].popleft()
+        # Check adjacent cells first (greedy approach)
+        directions = [('N', -1, 0), ('S', 1, 0), ('E', 0, 1), ('W', 0, -1)]
         
-        # If no exploration targets, find the nearest unknown cell
-        nearest_unknown = self.find_nearest_unknown(current_pos)
-        if nearest_unknown:
-            path = self.find_path(current_pos, nearest_unknown, crow_id)
-            if path:
-                next_pos = path[0]
-                return self.get_direction(current_pos, next_pos)
+        # Prefer directions with unknown cells
+        for direction, dx, dy in directions:
+            new_x, new_y = current_x + dx, current_y + dy
+            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+                self.global_map[new_x][new_y] != 'W' and
+                (new_x, new_y) not in crow['visited']):
+                return direction
+        
+        # If all adjacent cells visited, move towards any unknown cell
+        for direction, dx, dy in directions:
+            new_x, new_y = current_x + dx, current_y + dy
+            if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+                self.global_map[new_x][new_y] != 'W'):
+                return direction
         
         return None
     
-    def find_path(self, start, target, crow_id):
-        """Simple BFS to find path to target, avoiding known walls"""
-        queue = deque([(start, [])])
-        visited = set([start])
+    def find_nearest_unknown_simple(self, start_pos):
+        """Simple BFS with limited depth to avoid timeouts"""
+        x, y = start_pos
+        max_depth = 10  # Limit search depth
         
-        while queue:
-            (x, y), path = queue.popleft()
-            
-            if (x, y) == target:
-                return path
-            
-            for dx, dy, direction in [(0, 1, 'E'), (1, 0, 'S'), (0, -1, 'W'), (-1, 0, 'N')]:
-                new_x, new_y = x + dx, y + dy
-                new_pos = (new_x, new_y)
-                
-                if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
-                    new_pos not in visited and 
-                    self.global_map.get(new_pos, '_') != 'W'):
-                    visited.add(new_pos)
-                    queue.append((new_pos, path + [new_pos]))
-        
-        return None
-    
-    def find_nearest_unknown(self, start_pos):
-        """Find the nearest unknown cell using BFS"""
-        queue = deque([start_pos])
-        visited = set([start_pos])
-        
-        while queue:
-            x, y = queue.popleft()
-            
-            if (x, y) in self.unknown_cells:
-                return (x, y)
-            
-            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
-                new_x, new_y = x + dx, y + dy
-                new_pos = (new_x, new_y)
-                
-                if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
-                    new_pos not in visited and 
-                    self.global_map.get(new_pos, '_') != 'W'):
-                    visited.add(new_pos)
-                    queue.append(new_pos)
-        
-        return None
-    
-    def get_direction(self, current_pos, next_pos):
-        cx, cy = current_pos
-        nx, ny = next_pos
-        
-        if nx == cx:
-            if ny > cy: return 'E'
-            if ny < cy: return 'W'
-        if ny == cy:
-            if nx > cx: return 'S'
-            if nx < cx: return 'N'
+        # Check immediate vicinity first
+        for depth in range(1, min(4, max_depth + 1)):
+            for dx in range(-depth, depth + 1):
+                for dy in range(-depth, depth + 1):
+                    if abs(dx) + abs(dy) == depth:  # Manhattan distance
+                        new_x, new_y = x + dx, y + dy
+                        if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and
+                            self.global_map[new_x][new_y] == '?'):
+                            return (new_x, new_y)
         return None
 
 @app.route('/fog-of-wall', methods=['POST'])
@@ -906,6 +866,7 @@ def fog_of_wall():
         return jsonify(response)
         
     except Exception as e:
+        print(f"Error: {e}")
         return jsonify({'error': str(e)}), 400
 
 ##### fog of wall end
